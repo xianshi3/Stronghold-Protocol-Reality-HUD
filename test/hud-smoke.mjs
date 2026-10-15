@@ -46,7 +46,7 @@ const api = await page.evaluate(() => ({
   author: globalThis.__REALITY_HUD__?.author,
 }));
 check("面板已挂载", api.mounted);
-check("版本 1.5.0", api.ver === "1.5.0", String(api.ver));
+check("版本 1.5.1", api.ver === "1.5.1", String(api.ver));
 check("作者署名 Reality", api.author === "Reality", String(api.author));
 
 // v1.4.2: no brand text in the chrome, 邀请 leads the sections, the footer links are icons
@@ -235,7 +235,11 @@ check("名单渲染出提示或玩家行", /不支持在线名单|没有其他�
 // the HUD's frame handling hangs on net's '*' listener (the real _onMessage fires _emit(t) *and*
 // _emit('*', msg)), so drive that directly — a typed emit would only hit the game's own listeners.
 const fire = (msg) => page.evaluate((m) => { [...(globalThis.__SP__.net._listeners.get("*") || [])].forEach((fn) => fn(m)); }, msg);
-await fire({ t: "room.state", code: "AB12CD", mode: "coop", difficulty: "NORMAL", seats: [], spectators: [], inMatch: false });
+// v1.4.3: the section trusts the game's own store for 「which room am I in」 — seed it the way
+// main.js's onRoomState does, and keep the overlay's fallback mirror in sync via the push.
+const roomState = { t: "room.state", code: "AB12CD", mode: "coop", difficulty: "NORMAL", hostId: null, aiPicksLast: false, seats: [], spectators: [], inMatch: false };
+await page.evaluate((m) => { const { t: _t, ...room } = m; globalThis.__SP__.store.set({ room }); }, roomState);
+await fire(roomState);
 await settle();
 const copyBtn = await page.evaluate(() => ({
   text: document.getElementById("rh-invite-copy-link")?.textContent || "",
@@ -244,6 +248,17 @@ const copyBtn = await page.evaluate(() => ({
 }));
 check("在同盟时给出房间码与复制按钮", copyBtn.text === "复制邀请链接" && copyBtn.code === "AB12CD", JSON.stringify(copyBtn));
 check("链接格式 ?room=CODE", copyBtn.url.includes("?room=AB12CD"), copyBtn.url);
+
+// v1.4.3 regression: leaving a room clears the game store in place (screens/room.js) and the
+// server never tells the leaver (room.leave answers a bare ok) — with the overlay's own mirror
+// still holding the old room, the section must follow the store and drop the stale link.
+await page.evaluate(() => { globalThis.__SP__.store.set({ room: null }); });
+await settle();
+const staleRoom = await page.evaluate(() => ({
+  hint: /未在同盟中/.test(document.getElementById("rh-invite-head")?.textContent || ""),
+  copy: !!document.getElementById("rh-invite-copy-link"),
+}));
+check("退出同盟后不再显示旧房间链接", staleRoom.hint && !staleRoom.copy, JSON.stringify(staleRoom));
 
 // a room.invited push becomes a banner with 立即加入 / 忽略
 await fire({ t: "room.invited", from: "p_smoke", name: "烟测好友", code: "ZZ99YY" });
@@ -267,6 +282,43 @@ await page.evaluate(() => document.getElementById("rh-invite-join")?.click());
 await settle();
 check("未进入游戏时加入被拦下并提示", await page.evaluate(() => globalThis.__REALITY_HUD__.state.logs.some((e) => /请先/.test(e.text))));
 check("加入被拦下后横幅仍在", await page.evaluate(() => !document.getElementById("rh-invite-toast").hidden));
+
+// v1.4.3: 立即加入 while in ANOTHER room now sends room.join (the server drops the old seat
+// first); everything runs in one evaluate and the store is restored before any render so the
+// fake room never mounts a screen.
+const switchJoin = await page.evaluate(() => {
+  const { store, net } = globalThis.__SP__;
+  store.set({ room: { code: "OTHER1", mode: "coop", difficulty: "NORMAL", hostId: null, aiPicksLast: false, seats: [], spectators: [], inMatch: false } });
+  store.patch("session", { entered: true });
+  const hud = globalThis.__REALITY_HUD__;
+  hud.state.logs.length = 0;
+  const calls = [];
+  const orig = net.request;
+  net.request = (t, f) => { calls.push({ t, ...f }); return Promise.reject(Object.assign(new Error("spy"), { code: "OFFLINE" })); };
+  document.getElementById("rh-invite-join").click();
+  net.request = orig;
+  const logs = hud.state.logs.map((e) => e.text);
+  store.set({ room: null });
+  store.patch("session", { entered: false });
+  return { calls, logs };
+});
+check("在其他房间时点立即加入会发起换房", switchJoin.calls.some((c) => c.t === "room.join" && c.code === "ZZ99YY"), JSON.stringify(switchJoin.calls));
+check("旧的「你已在其他同盟中」硬拦已移除", !switchJoin.logs.some((t) => /你已在其他同盟中/.test(t)), JSON.stringify(switchJoin.logs));
+
+// v1.4.3: a running match in the current room refuses locally (the server would answer ROOM_STARTED)
+const switchMatch = await page.evaluate(() => {
+  const { store } = globalThis.__SP__;
+  store.set({ room: { code: "OTHER1", mode: "coop", difficulty: "NORMAL", hostId: null, aiPicksLast: false, seats: [], spectators: [], inMatch: true } });
+  store.patch("session", { entered: true });
+  const hud = globalThis.__REALITY_HUD__;
+  hud.state.logs.length = 0;
+  document.getElementById("rh-invite-join").click();
+  const logs = hud.state.logs.map((e) => e.text).join(" | ");
+  store.set({ room: null });
+  store.patch("session", { entered: false });
+  return logs;
+});
+check("对局进行中仍会拦下并说明原因", /对局进行中/.test(switchMatch), switchMatch);
 
 // 忽略 clears the banner
 await page.evaluate(() => document.getElementById("rh-invite-dismiss")?.click());

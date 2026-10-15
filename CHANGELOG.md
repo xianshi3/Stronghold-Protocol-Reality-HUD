@@ -2,6 +2,14 @@
 
 All notable changes to this project. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.1] - 2026-10-15
+
+### Fixed
+
+- **退出同盟后，邀请栏仍把旧同盟当成「当前房间」**: the section only knew a room from `room.state` / `room.closed` pushes, but a voluntary `room.leave` answers the leaver with a bare `ok` — the server tells the leaver nothing — so the old code/link kept showing and 邀请 clicks went into a server `NOT_IN_ROOM` failure. The overlay now reads the current room from the game's own store (`__SP__.store.get().room`, what the game's screens themselves show — it clears on leave, kick and session reset alike) with the old mirror kept only as a fallback, and repaints the moment the store's room changes.
+- **在同盟中时无法接受邀请**: 立即加入 refused locally (「你已在其他同盟中」) although `room.join` switches rooms server-side (it drops the old seat first) — the exact flow the banner exists for. It now sends the join; only a running match still refuses, with the reason in the log, and a join that left another room says so.
+- Smoke grew 46 → 50: the stale-room case (store cleared while the mirror is stale → the link is gone), the room-switching 立即加入 and the running-match refusal are asserted.
+
 ## [1.5.0] - 2026-10-15
 
 - 新增独立「干员伤害统计」窗口：实时显示本回合 / 全局伤害、伤害类型、增益减益类型与持续时间。

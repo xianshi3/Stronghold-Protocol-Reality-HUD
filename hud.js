@@ -51,7 +51,7 @@ const AUTHOR = Object.freeze({
   repoLabel: 'xianshi3/Stronghold-Protocol-Reality-HUD',
 });
 
-const MOD_VERSION = '1.5.0';
+const MOD_VERSION = '1.5.1';
 
 const DEFAULTS = {
   x: null,               // null = park it on the right edge (computed on first show)
@@ -257,6 +257,7 @@ const state = {
   // lifecycle
   mounted: false,
   _netAttached: false,
+  _storeAttached: false,
   _wasInMatch: false,
   _frames: 0,
   _acc: 0,
@@ -1531,7 +1532,7 @@ function phaseName(phase) {
 
 function renderMatch() {
   const grid = els.matchGrid;
-  const room = state.room;
+  const room = currentRoom();
   const pub = state.match;
   const st = globalThis.__SP__?.store?.get?.();
   const me = st?.me;
@@ -1618,6 +1619,20 @@ function copyInvite(btn, label, text) {
   });
 }
 
+/**
+ * The room the client is really in — the game's own store first: store.js keeps `room` (the last
+ * `room.state` payload, null outside one) and screens/room.js clears it the moment the player
+ * leaves, while the server never tells the leaver anything (room.leave answers a bare `ok`) — the
+ * overlay's own mirror alone kept showing a room already left (bug report 2026-10-15).
+ * Falls back to the mirror on game builds without a store.
+ * @returns {any|null}
+ */
+function currentRoom() {
+  const st = globalThis.__SP__?.store?.get?.();
+  const room = st ? st.room : undefined;
+  return room === undefined ? state.room : room || null;
+}
+
 function renderInvite() {
   renderInviteHead();
   renderInviteList();
@@ -1628,7 +1643,7 @@ function renderInvite() {
 function renderInviteHead() {
   const head = els.inviteHead;
   if (!head) return;
-  const code = state.room?.code;
+  const code = currentRoom()?.code;
   if (!code) {
     head.replaceChildren(h('div', { class: 'rh-invite-hint', text: '未在同盟中 — 创建或加入后，这里给出免密钥邀请链接' }));
     return;
@@ -1672,8 +1687,9 @@ function renderInviteList() {
 
   // inviting needs a room of one's own, and no match may be running in it (room.join would
   // answer ROOM_STARTED); a target deep in its own match is out of reach the same way
-  const myRoom = state.room?.code || null;
-  const myMatch = !!state.room?.inMatch;
+  const mine = currentRoom();
+  const myRoom = mine?.code || null;
+  const myMatch = !!mine?.inMatch;
   list.replaceChildren(...others.map((p) => {
     const where = p.inMatch ? '对局中' : p.inRoom ? '同盟中' : '大厅';
     const cls = p.inMatch ? 'is-warn' : p.inRoom ? '' : 'is-ok';
@@ -1702,7 +1718,8 @@ async function sendInvite(p, btn) {
   try {
     await net.request('room.invite', { playerId: p.id });
     btn.textContent = '已邀请';
-    pushLog('state', `已向 ${p.name} 发出邀请`, state.room?.code ? `同盟 ${state.room.code}` : '');
+    const code = currentRoom()?.code;
+    pushLog('state', `已向 ${p.name} 发出邀请`, code ? `同盟 ${code}` : '');
   } catch (err) {
     btn.textContent = '失败';
     // a server error frame is already in the log via the '*' listener; only local
@@ -1733,21 +1750,25 @@ function renderInviteToast() {
   );
 }
 
-/** 立即加入: the game's own room.join, exactly as the ?room= deep link does. */
+/**
+ * 立即加入: the game's own room.join, exactly as the ?room= deep link does. In another room it
+ * switches rooms — the server drops the old seat first (room.join does it) — so only a running
+ * match refuses here, with the reason in the log. v1.4.3: the old local refusal for 「在同盟中」
+ * blocked the one flow the banner exists for.
+ */
 function joinInvite(inv) {
   const sp = globalThis.__SP__;
   const net = sp?.net;
   const st = sp?.store?.get?.();
   if (!net) return;
   if (!st?.session?.entered) { pushLog('warn', '请先在游戏里点击「开始」', '进入游戏后才能接受邀请'); return; }
-  if (state.room && state.room.code !== inv.code) {
-    pushLog('warn', '你已在其他同盟中', `先离开 ${state.room.code} 再加入 ${inv.name} 的同盟 ${inv.code}`);
-    return;
-  }
+  const mine = currentRoom();
+  if (mine && mine.code === inv.code) { pushLog('state', `你已在同盟 ${inv.code} 中`); dismissInvite(inv); return; }
+  if (mine?.inMatch) { pushLog('warn', '你对局进行中', `对局结束后才能加入 ${inv.name} 的同盟 ${inv.code}`); return; }
   net.request('room.join', { code: inv.code })
     .then(() => {
       dismissInvite(inv);
-      pushLog('state', `已加入同盟 ${inv.code}`, `来自 ${inv.name} 的邀请`);
+      pushLog('state', `已加入同盟 ${inv.code}`, mine ? `已离开原同盟 ${mine.code} · 来自 ${inv.name} 的邀请` : `来自 ${inv.name} 的邀请`);
     })
     .catch((err) => {
       if (LOCAL_ONLY_CODES.has(err?.code)) pushLog('warn', `加入同盟 ${inv.code} 失败`, `${err.code}：${err.message}`);
@@ -2102,6 +2123,24 @@ function attachNet() {
   return true;
 }
 
+/**
+ * Watch the game's own store: when its `room` changes — leaving a room clears it in place and the
+ * server never tells the leaver, so no push arrives — repaint 邀请 and 本局 at once instead of
+ * waiting for the next roster poll. v1.4.3
+ */
+function attachStore() {
+  const st = globalThis.__SP__?.store;
+  if (!st || typeof st.subscribe !== 'function' || state._storeAttached) return;
+  state._storeAttached = true;
+  try {
+    st.subscribe((s, prev) => {
+      if (s.room !== prev.room) { scheduleRender('invite'); scheduleRender('match'); }
+    });
+  } catch {
+    state._storeAttached = false;
+  }
+}
+
 function summariseResult(msg) {
   if (!msg || typeof msg !== 'object') return '';
   const bits = [];
@@ -2150,6 +2189,7 @@ function startLoops() {
     statusTimer = setInterval(() => {
       if (document.hidden) return;                 // no work while the tab is in the background
       attachNet();
+      attachStore();
       const st = globalThis.__SP__?.store?.get?.();
       if (st) {
         const r = st.session?.entered ? (st.match?.public?.phase && st.match.public.phase !== 'LOBBY' ? 'game' : st.room ? (st.room.inMatch ? 'game' : 'room') : 'lobby') : 'title';
@@ -2414,6 +2454,7 @@ function showOverlay() {
   // the rAF queue needs one explicit kick: scheduleRender bails while paused
   requestAnimationFrame(() => { for (const k of ['status', 'spark', 'server', 'match', 'invite', 'perf', 'log', 'damage']) renderOnce(k); });
   attachNet();
+  attachStore();
   pollHealthz();
   pollPlayers();
   applyTimers();
