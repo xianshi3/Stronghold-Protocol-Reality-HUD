@@ -51,7 +51,7 @@ const AUTHOR = Object.freeze({
   repoLabel: 'xianshi3/Stronghold-Protocol-Reality-HUD',
 });
 
-const MOD_VERSION = '1.4.2';
+const MOD_VERSION = '1.5.0';
 
 const DEFAULTS = {
   x: null,               // null = park it on the right edge (computed on first show)
@@ -75,6 +75,13 @@ const DEFAULTS = {
     settings: false,
     about: false,
   },
+  damageWindow: {
+    visible: true,
+    x: null,
+    y: null,
+    width: 620,
+    collapsed: false,
+  },
   folded: {},             // sectionId -> bool, per-section fold state
   logFilter: 'all',       // all | warn | state
   logExpanded: [],        // log ids whose detail is open
@@ -92,7 +99,7 @@ const PRESETS = {
 };
 
 function loadConfig() {
-  const base = { ...DEFAULTS, show: { ...DEFAULTS.show }, folded: {} };
+  const base = { ...DEFAULTS, show: { ...DEFAULTS.show }, damageWindow: { ...DEFAULTS.damageWindow }, folded: {} };
   try {
     const raw = globalThis.localStorage?.getItem(STORAGE_KEY);
     if (!raw) return base;
@@ -102,6 +109,7 @@ function loadConfig() {
       ...base,
       ...parsed,
       show: { ...base.show, ...(parsed.show || {}) },
+      damageWindow: { ...base.damageWindow, ...(parsed.damageWindow || {}) },
       folded: { ...(parsed.folded || {}) },
       logExpanded: Array.isArray(parsed.logExpanded) ? parsed.logExpanded.slice(-40) : [],
     };
@@ -234,6 +242,18 @@ const state = {
   // log
   logs: [],
 
+  // damage / effects window (fed from optional battle frames; it degrades when a server does not
+  // expose source ids or client combat events)
+  damage: {
+    round: null,
+    battleId: null,
+    units: new Map(),
+    teamEffects: new Map(),
+    unattributed: { current: 0, total: 0, currentTypes: {}, totalTypes: {} },
+    attackSources: new Map(), // target id -> { source id, at }
+    lastFrameAt: 0,
+  },
+
   // lifecycle
   mounted: false,
   _netAttached: false,
@@ -289,6 +309,372 @@ function isOpenByDefault(entry) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// damage / effects aggregation
+//
+// The game has shipped both server-run frames (b.ev) and client-combat frames (b.start/b.result).
+// Their detail level differs by version, so this layer deliberately accepts the tuple and object
+// forms used by both. It never assumes a source id is present: old b.ev damage tuples only carry
+// the target, in which case the preceding atk tuple is the best attribution available.
+
+const DAMAGE_TYPE_TEXT = Object.freeze({
+  phys: '物理', physical: '物理',
+  arts: '法术', magic: '法术',
+  true: '真实', direct: '真实',
+  elemental: '元素', element: '元素',
+  burn: '灼燃', neural: '神经', necrosis: '侵蚀', apoptosis: '凋亡',
+  unknown: '未分类',
+});
+
+const NEGATIVE_EFFECT_WORDS = /stun|freeze|cold|sleep|bind|silence|fear|root|slow|fragile|vuln|debuff|减益|眩晕|冻结|寒冷|睡眠|束缚|沉默|恐惧|禁锢|减速|脆弱/i;
+const POSITIVE_EFFECT_WORDS = /skill|shield|stealth|camou|haste|atk|def|aspd|heal|buff|增益|护盾|隐匿|迷彩|加速|攻击|防御|技力/i;
+
+function finiteNumber(...values) {
+  for (const v of values) {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function normalizeDamageType(type) {
+  if (type == null || type === '') return 'unknown';
+  const key = String(type).toLowerCase();
+  return DAMAGE_TYPE_TEXT[key] ? key : key.replace(/[^a-z0-9_\u4e00-\u9fff-]/g, '') || 'unknown';
+}
+
+function damageUnitKey(raw) {
+  if (raw == null) return '';
+  if (typeof raw !== 'object') return String(raw);
+  return String(raw.uid ?? raw.unitId ?? raw.id ?? raw.defId ?? raw.name ?? '');
+}
+
+function isOperatorRecord(rec) {
+  if (!rec) return false;
+  if (rec.side === 'enemy') return false;
+  if (rec.kind === 'player' || rec.kind === 'session') return false;
+  return rec.side === 'ally' || rec.kind === 'op' || rec.kind === 'token' || rec.kind === 'chess' || rec.kind === 'operator';
+}
+
+function emptyDamageTypes() { return Object.create(null); }
+
+function ensureDamageUnit(raw, defaults = {}) {
+  const key = damageUnitKey(raw) || damageUnitKey(defaults) || 'unknown';
+  let rec = state.damage.units.get(key);
+  if (!rec) {
+    rec = {
+      key,
+      id: null,
+      uid: null,
+      defId: null,
+      name: null,
+      kind: null,
+      side: null,
+      current: 0,
+      total: 0,
+      currentTypes: emptyDamageTypes(),
+      totalTypes: emptyDamageTypes(),
+      effects: new Map(),
+      reported: Object.create(null),
+    };
+    state.damage.units.set(key, rec);
+  }
+  const src = (raw && typeof raw === 'object') ? raw : defaults;
+  const merged = { ...defaults, ...(src && typeof src === 'object' ? src : {}) };
+  if (merged.id != null) rec.id = String(merged.id);
+  if (merged.uid != null) rec.uid = String(merged.uid);
+  if (merged.defId != null) rec.defId = String(merged.defId);
+  if (merged.name != null && String(merged.name).trim()) rec.name = String(merged.name);
+  if (merged.kind != null) rec.kind = String(merged.kind);
+  if (merged.side != null) rec.side = String(merged.side);
+  if (merged.ownerId != null) rec.ownerId = String(merged.ownerId);
+  if (rec.name == null) rec.name = rec.id || rec.defId || key;
+  return rec;
+}
+
+function damageEffectType(key, raw = {}) {
+  const kind = String(raw.kind ?? raw.type ?? raw.effectType ?? '').toLowerCase();
+  if (raw.positive === true || kind === 'buff' || kind === 'positive') return '增益';
+  if (raw.positive === false || kind === 'debuff' || kind === 'negative') return '减益';
+  if (NEGATIVE_EFFECT_WORDS.test(String(key))) return '减益';
+  if (POSITIVE_EFFECT_WORDS.test(String(key))) return '增益';
+  return '状态';
+}
+
+function effectDurationMs(raw, nowMs = now()) {
+  const duration = finiteNumber(raw?.durationMs, raw?.duration_ms);
+  if (duration != null) return duration >= 1000 ? duration : duration * 1000;
+  const seconds = finiteNumber(raw?.seconds, raw?.durationSec, raw?.durationSeconds);
+  if (seconds != null) return Math.max(0, seconds * 1000);
+  const until = finiteNumber(raw?.untilMs, raw?.expiresAt, raw?.expireAt);
+  if (until != null && until > nowMs - 86400000) return Math.max(0, until - nowMs);
+  return null;
+}
+
+function effectText(effect) {
+  if (!effect) return '—';
+  const age = Math.max(0, now() - effect.startedAt);
+  let duration;
+  if (effect.active && Number.isFinite(effect.expiresAt)) {
+    duration = `${Math.max(0, Math.ceil((effect.expiresAt - now()) / 1000))}秒`;
+  } else if (effect.active) {
+    duration = `已${Math.floor(age / 1000)}秒`;
+  } else {
+    duration = `${Math.max(0, Math.round((effect.endedAt - effect.startedAt) / 1000))}秒`;
+  }
+  return `${effect.label} ${effect.type} ${duration}`;
+}
+
+function ensureDamageEffect(rec, rawKey, raw = {}, active = true) {
+  const key = String(rawKey ?? raw.key ?? raw.id ?? raw.name ?? 'status');
+  const at = now();
+  let effect = rec.effects.get(key);
+  if (!effect) {
+    effect = { key, label: String(raw.name ?? raw.label ?? key), type: damageEffectType(key, raw), startedAt: at, endedAt: at, expiresAt: null, active: false };
+    rec.effects.set(key, effect);
+  }
+  effect.label = String(raw.name ?? raw.label ?? effect.label ?? key);
+  effect.type = damageEffectType(key, raw);
+  if (active) {
+    if (!effect.active) effect.startedAt = at;
+    effect.active = true;
+    const duration = effectDurationMs(raw, at);
+    if (duration != null) effect.expiresAt = at + duration;
+    effect.endedAt = at;
+  } else {
+    effect.active = false;
+    effect.endedAt = at;
+    if (Number.isFinite(effect.expiresAt) && effect.expiresAt > at) effect.expiresAt = at;
+  }
+  while (rec.effects.size > 24) rec.effects.delete(rec.effects.keys().next().value);
+  return effect;
+}
+
+function resetDamageRound(round) {
+  const n = finiteNumber(round);
+  if (n == null) return;
+  if (state.damage.round == null) state.damage.round = n;
+  if (state.damage.round === n) return;
+  state.damage.round = n;
+  for (const rec of state.damage.units.values()) {
+    rec.current = 0;
+    rec.currentTypes = emptyDamageTypes();
+    rec.reported = Object.create(null);
+    for (const effect of rec.effects.values()) {
+      if (effect.active && Number.isFinite(effect.expiresAt) && effect.expiresAt <= now()) effect.active = false;
+    }
+  }
+  state.damage.unattributed.current = 0;
+  state.damage.unattributed.currentTypes = emptyDamageTypes();
+}
+
+function resetDamageSession() {
+  state.damage.round = null;
+  state.damage.battleId = null;
+  state.damage.units.clear();
+  state.damage.teamEffects.clear();
+  state.damage.attackSources.clear();
+  state.damage.unattributed = { current: 0, total: 0, currentTypes: emptyDamageTypes(), totalTypes: emptyDamageTypes() };
+  scheduleRender('damage');
+}
+
+function addDamageToBucket(bucket, amount, type) {
+  const n = Number(amount);
+  if (!Number.isFinite(n) || n <= 0) return false;
+  const key = normalizeDamageType(type);
+  bucket.current += n;
+  bucket.total += n;
+  bucket.currentTypes[key] = (bucket.currentTypes[key] || 0) + n;
+  bucket.totalTypes[key] = (bucket.totalTypes[key] || 0) + n;
+  return true;
+}
+
+function recordDamage(source, amount, type) {
+  const n = Number(amount);
+  if (!Number.isFinite(n) || n <= 0) return;
+  const rec = source && isOperatorRecord(source) ? source : null;
+  if (rec) {
+    const key = normalizeDamageType(type);
+    rec.current += n;
+    rec.total += n;
+    rec.currentTypes[key] = (rec.currentTypes[key] || 0) + n;
+    rec.totalTypes[key] = (rec.totalTypes[key] || 0) + n;
+  } else addDamageToBucket(state.damage.unattributed, n, type);
+  scheduleRender('damage');
+}
+
+function mergeReportedDamage(raw, rec, sourceKey = 'stats') {
+  if (!rec || !raw || typeof raw !== 'object') return;
+  const stats = raw.stats && typeof raw.stats === 'object' ? raw.stats : raw;
+  const reported = finiteNumber(stats.damage, stats.dmg, stats.damageDealt, stats.dealt);
+  if (reported != null && reported >= 0) {
+    const key = `${sourceKey}:${state.damage.round ?? 'match'}`;
+    const prev = rec.reported[key] ?? 0;
+    if (reported >= prev) {
+      // Reported values are snapshots, while b.ev values are increments. Bring the displayed
+      // counter up to the snapshot without double-counting event increments already seen.
+      const delta = reported - prev;
+      const before = rec.current;
+      if (delta > 0 && rec.current < reported) {
+        rec.current = reported;
+        rec.total += Math.max(0, reported - before);
+      }
+      rec.reported[key] = reported;
+    }
+  }
+  const byType = stats.damageByType || stats.dmgByType || stats.types;
+  if (byType && typeof byType === 'object' && !Array.isArray(byType)) {
+    for (const [type, value] of Object.entries(byType)) {
+      const n = Number(value);
+      if (!(n >= 0)) continue;
+      const key = normalizeDamageType(type);
+      rec.currentTypes[key] = Math.max(rec.currentTypes[key] || 0, n);
+      rec.totalTypes[key] = Math.max(rec.totalTypes[key] || 0, n);
+    }
+  }
+}
+
+function updateDamageUnits(rawUnits, sourceKey = 'frame') {
+  if (!Array.isArray(rawUnits)) return;
+  for (const raw of rawUnits) {
+    if (!raw || typeof raw !== 'object') continue;
+    const rec = ensureDamageUnit(raw, sourceKey.startsWith('result') || sourceKey === 'unitStats' ? { kind: 'op', side: 'ally' } : {});
+    mergeReportedDamage(raw, rec, sourceKey);
+  }
+  scheduleRender('damage');
+}
+
+function unitFromId(id) {
+  if (id == null) return null;
+  const key = String(id);
+  return state.damage.units.get(key) || [...state.damage.units.values()].find((r) => r.id === key || r.uid === key) || null;
+}
+
+function registerAttack(sourceId, targetId) {
+  if (sourceId == null || targetId == null) return;
+  state.damage.attackSources.set(String(targetId), { source: String(sourceId), at: now() });
+}
+
+function sourceForDamage(sourceId, targetId) {
+  if (sourceId != null) {
+    const known = unitFromId(sourceId);
+    if (!known) {
+      const target = unitFromId(targetId);
+      // A source that is missing from the metadata is most often an enemy when the target is an
+      // ally. Avoid counting that hit as operator damage; for a known enemy target, an unknown
+      // source is a useful forward-compatible assumption for old client frames.
+      if (target?.side === 'ally') return null;
+    }
+    const direct = known || ensureDamageUnit({ id: sourceId, kind: 'op', side: 'ally' });
+    return isOperatorRecord(direct) ? direct : null;
+  }
+  const pending = targetId == null ? null : state.damage.attackSources.get(String(targetId));
+  if (!pending || now() - pending.at > 8000) return null;
+  const rec = unitFromId(pending.source);
+  return isOperatorRecord(rec) ? rec : null;
+}
+
+function handleStatusEvent(unitId, key, active, raw = {}) {
+  const rec = unitFromId(unitId) || ensureDamageUnit({ id: unitId, kind: 'op', side: 'ally' });
+  if (!rec) return;
+  ensureDamageEffect(rec, key, raw, active !== false);
+  scheduleRender('damage');
+}
+
+function parseDamageEvent(event, frame = {}) {
+  if (Array.isArray(event)) {
+    const kind = String(event[0] ?? '').toLowerCase();
+    if (kind === 'atk' || kind === 'attack') {
+      if (event.length >= 3) registerAttack(event[1], event[2]);
+      return;
+    }
+    if (kind === 'dmg' || kind === 'damage' || kind === 'hit') {
+      let sourceId = null, targetId, amount, type;
+      if (event.length >= 5) { sourceId = event[1]; targetId = event[2]; amount = event[3]; type = event[4]; }
+      else { targetId = event[1]; amount = event[2]; type = event[3]; }
+      recordDamage(sourceForDamage(sourceId, targetId), amount, type);
+      return;
+    }
+    if (kind === 'status' || kind === 'buff' || kind === 'debuff' || kind === 'effect') {
+      handleStatusEvent(event[1], event[2], event[3] !== 0 && event[3] !== false, { duration: event[4], type: kind });
+      return;
+    }
+    if (kind === 'skill') {
+      handleStatusEvent(event[1], 'skill', event[2] !== 0 && event[2] !== false, { positive: true, name: '技能' });
+    }
+    return;
+  }
+  if (!event || typeof event !== 'object') return;
+  const kind = String(event.t ?? event.type ?? event.kind ?? '').toLowerCase();
+  if (kind === 'atk' || kind === 'attack') { registerAttack(event.sourceId ?? event.source ?? event.src ?? event.attacker, event.targetId ?? event.target ?? event.tgt); return; }
+  if (kind === 'dmg' || kind === 'damage' || kind === 'hit') {
+    const targetId = event.targetId ?? event.target ?? event.tgt ?? event.to;
+    const sourceId = event.sourceId ?? event.source ?? event.src ?? event.attacker ?? event.from;
+    recordDamage(sourceForDamage(sourceId, targetId), event.amount ?? event.damage ?? event.value ?? event.n, event.damageType ?? event.typeName ?? event.element ?? event.type);
+    return;
+  }
+  if (kind === 'status' || kind === 'buff' || kind === 'debuff' || kind === 'effect') {
+    handleStatusEvent(event.unitId ?? event.targetId ?? event.target ?? event.id, event.key ?? event.status ?? event.effectId ?? event.name, event.active ?? event.on ?? event.enabled, event);
+  }
+}
+
+function parseBattleEvents(msg) {
+  const events = msg?.ev || msg?.events || msg?.event || msg?.data?.ev;
+  if (Array.isArray(events)) for (const event of events) parseDamageEvent(event, msg);
+  else if (events && typeof events === 'object') parseDamageEvent(events, msg);
+  if (msg?.gt != null) state.damage.lastFrameAt = Number(msg.gt) || state.damage.lastFrameAt;
+  scheduleRender('damage');
+}
+
+function parseTeamEffects(rawEffects) {
+  if (!Array.isArray(rawEffects)) return;
+  for (const raw of rawEffects) {
+    if (!raw || typeof raw !== 'object') continue;
+    const key = String(raw.id ?? raw.key ?? raw.name ?? 'effect');
+    let effect = state.damage.teamEffects.get(key);
+    if (!effect) effect = { key, label: key, type: damageEffectType(key, raw), startedAt: now(), endedAt: now(), expiresAt: null, active: true };
+    effect.label = String(raw.name ?? raw.label ?? key);
+    effect.type = damageEffectType(key, raw);
+    effect.active = raw.active !== false;
+    const duration = effectDurationMs(raw, now());
+    if (duration != null) effect.expiresAt = effect.startedAt + duration;
+    state.damage.teamEffects.set(key, effect);
+  }
+  while (state.damage.teamEffects.size > 24) state.damage.teamEffects.delete(state.damage.teamEffects.keys().next().value);
+  scheduleRender('damage');
+}
+
+function parseDamageFrame(msg) {
+  if (!msg || typeof msg !== 'object') return;
+  if (msg.round != null) resetDamageRound(msg.round);
+  if (msg.battleId != null) state.damage.battleId = String(msg.battleId);
+  if (Array.isArray(msg.units)) updateDamageUnits(msg.units, msg.t || 'frame');
+  if (Array.isArray(msg.effects)) parseTeamEffects(msg.effects);
+  if (msg.spec) {
+    const players = Array.isArray(msg.spec.players) ? msg.spec.players : [];
+    for (const player of players) updateDamageUnits(player?.units || player?.board || [], 'battle-spec');
+  }
+  parseBattleEvents(msg);
+}
+
+function parseResultDamage(msg) {
+  const result = msg?.result && typeof msg.result === 'object' ? msg.result : msg;
+  for (const player of Array.isArray(result?.players) ? result.players : []) {
+    updateDamageUnits(player?.unitStats || [], 'result');
+    const units = player?.units || player?.lineup || [];
+    updateDamageUnits(units, 'result-units');
+    if (player?.stats?.dmgDealt != null) {
+      // Keep team-level result visible as unattributed when no per-operator stats exist.
+      if (!Array.isArray(player.unitStats) || !player.unitStats.length) {
+        const n = Number(player.stats.dmgDealt);
+        if (Number.isFinite(n)) state.damage.unattributed.total = Math.max(state.damage.unattributed.total, n);
+      }
+    }
+  }
+  updateDamageUnits(result?.unitStats || [], 'result');
+  scheduleRender('damage');
+}
+
+// ---------------------------------------------------------------------------------------------
 // render scheduling
 //
 // Every update goes through one rAF-coalesced slot, so a burst of events (a welcome plus a
@@ -315,6 +701,7 @@ function scheduleRender(what) {
       else if (job === 'invite') renderInvite();
       else if (job === 'perf') renderPerf();
       else if (job === 'log') renderLog();
+      else if (job === 'damage') renderDamage();
     }
   });
 }
@@ -325,6 +712,9 @@ function scheduleRender(what) {
 
 let root = null;
 let els = {};
+let damageRoot = null;
+let damageEls = {};
+let damageMounted = false;
 
 function iconBtn(id, glyph, title, onClick) {
   return h('button', { class: 'rh-ibtn', id, title, 'aria-label': title, onclick: onClick }, glyph);
@@ -351,6 +741,7 @@ function syncMenu() {
     'rh-menu-pin': state.cfg.pinned,
     'rh-menu-mini': state.cfg.mini,
     'rh-menu-pause': state.cfg.paused,
+    'rh-menu-damage': damageMounted,
   };
   for (const [id, on] of Object.entries(rows)) {
     const row = $('#' + id, root);
@@ -359,6 +750,151 @@ function syncMenu() {
     const stateEl = $('.rh-menu-state', row);
     if (stateEl) stateEl.textContent = on ? '开' : '关';
   }
+}
+
+function damageTypeText(type) { return DAMAGE_TYPE_TEXT[normalizeDamageType(type)] || String(type || '未分类'); }
+
+function formatDamageNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  if (Math.abs(n) >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(Math.round(n * 10) / 10);
+}
+
+function damageTypesText(types) {
+  const entries = Object.entries(types || {}).filter(([, n]) => Number(n) > 0).sort((a, b) => b[1] - a[1]);
+  return entries.length ? entries.slice(0, 4).map(([key, n]) => `${damageTypeText(key)} ${formatDamageNumber(n)}`).join(' · ') : '—';
+}
+
+function activeEffectsText(rec) {
+  const effects = [...(rec?.effects?.values?.() || [])]
+    .filter((e) => e.active || now() - e.endedAt < 8000)
+    .sort((a, b) => Number(b.active) - Number(a.active) || b.startedAt - a.startedAt)
+    .slice(0, 4);
+  return effects.length ? effects.map(effectText).join('；') : '—';
+}
+
+function damageWindowPlace() {
+  if (!damageRoot) return;
+  const cfg = state.cfg.damageWindow;
+  const vw = globalThis.innerWidth || 1024;
+  const vh = globalThis.innerHeight || 768;
+  const w = damageRoot.offsetWidth || cfg.width || 620;
+  const hgt = damageRoot.offsetHeight || 300;
+  const x = cfg.x == null ? Math.max(8, vw - w - 16) : cfg.x;
+  const y = cfg.y == null ? Math.max(8, vh - hgt - 20) : cfg.y;
+  damageRoot.style.left = `${clamp(x, 8, Math.max(8, vw - w - 8))}px`;
+  damageRoot.style.top = `${clamp(y, 8, Math.max(8, vh - hgt - 8))}px`;
+}
+
+function enableDamageWindowDrag() {
+  const head = damageRoot?.querySelector('.rh-damage-head');
+  if (!head || head.dataset.dragBound) return;
+  head.dataset.dragBound = '1';
+  let active = false, sx = 0, sy = 0, ox = 0, oy = 0;
+  head.addEventListener('pointerdown', (ev) => {
+    if (ev.target.closest('button')) return;
+    active = true; sx = ev.clientX; sy = ev.clientY;
+    ox = damageRoot.offsetLeft; oy = damageRoot.offsetTop;
+    damageRoot.classList.add('is-dragging'); head.setPointerCapture?.(ev.pointerId); ev.preventDefault();
+  });
+  head.addEventListener('pointermove', (ev) => {
+    if (!active) return;
+    const vw = globalThis.innerWidth || 1024, vh = globalThis.innerHeight || 768;
+    damageRoot.style.left = `${clamp(ox + ev.clientX - sx, 8, Math.max(8, vw - damageRoot.offsetWidth - 8))}px`;
+    damageRoot.style.top = `${clamp(oy + ev.clientY - sy, 8, Math.max(8, vh - damageRoot.offsetHeight - 8))}px`;
+  });
+  const end = () => {
+    if (!active) return;
+    active = false; damageRoot.classList.remove('is-dragging');
+    state.cfg.damageWindow.x = damageRoot.offsetLeft; state.cfg.damageWindow.y = damageRoot.offsetTop; saveConfig();
+  };
+  head.addEventListener('pointerup', end); head.addEventListener('pointercancel', end);
+}
+
+function buildDamageWindow() {
+  damageRoot = h('div', { class: 'rh-damage-window', id: 'rh-damage-window', role: 'dialog', 'aria-label': '干员伤害统计' });
+  damageRoot.style.setProperty('--rh-damage-w', `${clamp(Number(state.cfg.damageWindow.width) || 620, 360, 860)}px`);
+  const fold = h('button', { class: 'rh-ibtn', id: 'rh-damage-fold', title: '折叠 / 展开', onclick: () => {
+    state.cfg.damageWindow.collapsed = !state.cfg.damageWindow.collapsed;
+    damageRoot.classList.toggle('is-collapsed', state.cfg.damageWindow.collapsed);
+    saveConfig();
+  } }, state.cfg.damageWindow.collapsed ? '+' : '—');
+  const close = h('button', { class: 'rh-ibtn rh-ibtn--x', id: 'rh-damage-close', title: '关闭伤害统计窗口', onclick: () => { hideDamageWindow(); syncMenu(); } }, '×');
+  const head = h('div', { class: 'rh-damage-head' },
+    h('span', { class: 'rh-dot is-ok', id: 'rh-damage-dot' }),
+    h('span', { class: 'rh-damage-title', text: '干员伤害统计' }),
+    h('span', { class: 'rh-damage-round', id: 'rh-damage-round', text: '等待战斗' }),
+    h('div', { class: 'rh-head-actions' }, fold, close),
+  );
+  const summary = h('div', { class: 'rh-damage-summary', id: 'rh-damage-summary', text: '等待战斗数据…' });
+  const table = h('div', { class: 'rh-damage-table', id: 'rh-damage-table' });
+  const effects = h('div', { class: 'rh-damage-team-effects', id: 'rh-damage-team-effects' });
+  const foot = h('div', { class: 'rh-damage-foot', text: '本回合 / 全局 · 伤害类型 · 增益/减益持续时间' });
+  damageRoot.append(head, summary, table, effects, foot);
+  if (state.cfg.damageWindow.collapsed) damageRoot.classList.add('is-collapsed');
+  damageEls = { head, fold, round: $('#rh-damage-round', damageRoot), summary, table, effects, foot };
+  enableDamageWindowDrag();
+  return damageRoot;
+}
+
+function showDamageWindow() {
+  if (damageMounted) return;
+  if (!damageRoot) buildDamageWindow();
+  document.body.append(damageRoot);
+  damageMounted = true;
+  state.cfg.damageWindow.visible = true;
+  damageWindowPlace();
+  renderDamage();
+  syncMenu();
+}
+
+function hideDamageWindow() {
+  if (!damageMounted) return;
+  state.cfg.damageWindow.visible = false;
+  damageRoot.remove();
+  damageMounted = false;
+  saveConfig();
+  syncMenu();
+}
+
+function renderDamage() {
+  if (!damageMounted || !damageEls.table) return;
+  const d = state.damage;
+  const rows = [...d.units.values()].filter(isOperatorRecord).sort((a, b) => b.current - a.current || b.total - a.total || String(a.name).localeCompare(String(b.name), 'zh'));
+  const allCurrent = rows.reduce((sum, rec) => sum + rec.current, 0) + d.unattributed.current;
+  const allTotal = rows.reduce((sum, rec) => sum + rec.total, 0) + d.unattributed.total;
+  damageEls.round.textContent = d.round == null ? '等待战斗' : `第 ${d.round} 回合`;
+  damageEls.summary.textContent = d.round == null
+    ? '等待战斗事件；进入战斗后这里会实时更新。'
+    : `本回合 ${formatDamageNumber(allCurrent)} · 全局 ${formatDamageNumber(allTotal)} · ${rows.length} 名干员`;
+  if (!rows.length && !d.unattributed.current && !d.unattributed.total) {
+    damageEls.table.replaceChildren(h('div', { class: 'rh-damage-empty', text: '尚未收到干员伤害事件' }));
+  } else {
+    const head = h('div', { class: 'rh-damage-row rh-damage-head-row' },
+      h('span', { text: '干员' }), h('span', { text: '本回合' }), h('span', { text: '全局' }), h('span', { text: '伤害类型' }), h('span', { text: '增益 / 减益' }));
+    const body = rows.map((rec) => h('div', { class: `rh-damage-row ${rec.current > 0 ? 'is-active' : ''}` },
+      h('span', { class: 'rh-damage-name', title: rec.uid ? `${rec.name} · ${rec.uid}` : rec.name, text: rec.name }),
+      h('span', { class: 'rh-damage-num', text: formatDamageNumber(rec.current) }),
+      h('span', { class: 'rh-damage-num', text: formatDamageNumber(rec.total) }),
+      h('span', { class: 'rh-damage-types', text: damageTypesText(rec.currentTypes) }),
+      h('span', { class: 'rh-damage-effects', text: activeEffectsText(rec) }),
+    ));
+    if (d.unattributed.current || d.unattributed.total) body.push(h('div', { class: 'rh-damage-row is-unattributed' },
+      h('span', { class: 'rh-damage-name', text: '未归属伤害' }),
+      h('span', { class: 'rh-damage-num', text: formatDamageNumber(d.unattributed.current) }),
+      h('span', { class: 'rh-damage-num', text: formatDamageNumber(d.unattributed.total) }),
+      h('span', { class: 'rh-damage-types', text: damageTypesText(d.unattributed.currentTypes) }),
+      h('span', { class: 'rh-damage-effects', text: '协议未提供来源' }),
+    ));
+    damageEls.table.replaceChildren(head, ...body);
+  }
+  const team = [...d.teamEffects.values()].filter((e) => e.active || now() - e.endedAt < 8000).slice(0, 8);
+  damageEls.effects.replaceChildren(...(team.length ? [
+    h('div', { class: 'rh-damage-team-title', text: '全队效果' }),
+    h('div', { class: 'rh-damage-team-list', text: team.map(effectText).join('；') }),
+  ] : []));
 }
 
 function buildUi() {
@@ -383,6 +919,10 @@ function buildUi() {
       applyTimers();
       saveConfig();
       scheduleRender('all');
+      syncMenu();
+    }),
+    menuRow('rh-menu-damage', '伤害统计窗口', !!state.cfg.damageWindow.visible, () => {
+      if (damageMounted) hideDamageWindow(); else showDamageWindow();
       syncMenu();
     }),
     menuRow('rh-menu-settings', '打开设置', false, () => {
@@ -513,7 +1053,7 @@ function buildUi() {
         class: 'rh-reset', text: '恢复默认位置与外观',
         onclick: () => {
           localStorage.removeItem(STORAGE_KEY);
-          Object.assign(state.cfg, { ...DEFAULTS, show: { ...DEFAULTS.show }, folded: {}, logExpanded: [] });
+          Object.assign(state.cfg, { ...DEFAULTS, show: { ...DEFAULTS.show }, damageWindow: { ...DEFAULTS.damageWindow }, folded: {}, logExpanded: [] });
           root.style.setProperty('--rh-opacity', String(DEFAULTS.opacity));
           root.style.setProperty('--rh-idle-opacity', String(DEFAULTS.idleOpacity));
           root.classList.remove('rh-unpinned', 'rh-mini', 'is-collapsed');
@@ -530,6 +1070,8 @@ function buildUi() {
           syncToggles();
           syncPresetChips();
           placeInitial();
+          if (state.mounted && state.cfg.damageWindow.visible && !damageMounted) showDamageWindow();
+          if (damageMounted) { damageWindowPlace(); renderDamage(); }
           scheduleRender('all');
         },
       }),
@@ -1470,6 +2012,7 @@ function attachNet() {
       case 'room.state': {
         const prev = state.room;
         state.room = msg;
+        if (msg.code && msg.code !== prev?.code) resetDamageSession();
         if (msg.code && msg.code !== prev?.code) {
           pushLog('state', `房间 ${msg.code}`, `${msg.mode === 'solo' ? '独立' : '同盟'} · ${msg.difficulty}`);
         }
@@ -1483,6 +2026,7 @@ function attachNet() {
       case 'm.public': {
         const prevPhase = state.match?.phase;
         state.match = msg;
+        parseDamageFrame(msg);
         if (msg.phase && msg.phase !== prevPhase) {
           const round = msg.lastRound ? ` · 第 ${msg.round}/${msg.lastRound} 回合` : '';
           pushLog('state', `阶段 → ${phaseName(msg.phase)}`, `${msg.modeId || ''}${round}`);
@@ -1491,12 +2035,14 @@ function attachNet() {
         break;
       }
       case 'm.result':
+        parseResultDamage(msg);
         state.match = null;
         pushLog('state', '本局结算', summariseResult(msg));
         scheduleRender('match');
         break;
       case 'room.closed':
         state.room = null;
+        resetDamageSession();
         pushLog('warn', '房间已关闭', ROOM_CLOSED[msg.reason] || msg.reason || '原因未说明',
           [['reason', msg.reason || '—']]);
         scheduleRender('match');
@@ -1526,8 +2072,28 @@ function attachNet() {
           msg.detail || (msg.msg && msg.code ? msg.msg : ''), kv);
         break;
       }
+      case 'm.private':
+        updateDamageUnits(msg.board || msg.units || [], 'private');
+        parseTeamEffects(msg.effects);
+        break;
+      case 'm.field':
+        updateDamageUnits(msg.units || [], 'field');
+        parseTeamEffects(msg.effects);
+        parseDamageFrame(msg);
+        break;
+      case 'b.start':
+        parseDamageFrame(msg);
+        break;
+      case 'b.ev':
+        parseDamageFrame(msg);
+        break;
+      case 'b.result':
+        parseResultDamage(msg);
+        break;
       case 'm.unitStats':
-        break;               // frequent and uninteresting; skip the log but stay subscribed
+        if (msg.round != null) resetDamageRound(msg.round);
+        updateDamageUnits(msg.units || [], 'unitStats');
+        break;
       default:
         if (STANDALONE.has(msg.t)) pushLog('state', `收到 ${msg.t}`);
     }
@@ -1599,6 +2165,7 @@ function startLoops() {
         scheduleRender('server');
       }
       scheduleRender('status');
+      scheduleRender('damage');
     }, 1000);
   }
   if (!healthzTimer) healthzTimer = setInterval(() => { if (!document.hidden) pollHealthz(); }, HEALTHZ_INTERVAL);
@@ -1840,11 +2407,12 @@ function showOverlay() {
   hideRecall();
   document.body.append(root);
   state.mounted = true;
+  if (state.cfg.damageWindow.visible) showDamageWindow();
   placeInitial();
   if (!state._dragBound) { enableDrag(); state._dragBound = true; }
   scheduleRender('all');
   // the rAF queue needs one explicit kick: scheduleRender bails while paused
-  requestAnimationFrame(() => { for (const k of ['status', 'spark', 'server', 'match', 'invite', 'perf', 'log']) renderOnce(k); });
+  requestAnimationFrame(() => { for (const k of ['status', 'spark', 'server', 'match', 'invite', 'perf', 'log', 'damage']) renderOnce(k); });
   attachNet();
   pollHealthz();
   pollPlayers();
@@ -1860,11 +2428,13 @@ function renderOnce(what) {
   else if (what === 'invite') renderInvite();
   else if (what === 'perf') renderPerf();
   else if (what === 'log') renderLog();
+  else if (what === 'damage') renderDamage();
 }
 
 function hideOverlay() {
   if (!state.mounted) return;
   root.remove();
+  if (damageMounted) { damageRoot.remove(); damageMounted = false; }
   state.mounted = false;
   stopTimers();
   showRecall();
@@ -1916,6 +2486,7 @@ document.addEventListener('keydown', (ev) => {
 // ---------------------------------------------------------------------------------------------
 
 root = buildUi();
+damageRoot = buildDamageWindow();
 showOverlay();
 
 /** Exposed for other mods / debugging. */

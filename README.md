@@ -3,7 +3,7 @@
 > **Reality HUD** —— 可拖拽的悬浮窗 mod，叠加在 [《卫戍协议：盟约》](https://github.com/sganggs/Stronghold-Protocol)（Stronghold Protocol，**原项目 / Upstream**）游戏页面之上：连接状态、真实延迟曲线、在线人数、本局信息、**免密钥邀请好友**、性能与事件日志，一屏看全。
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-4ed8af.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.4.2-4ed8af.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.5.0-4ed8af.svg)](CHANGELOG.md)
 [![Game version](https://img.shields.io/badge/game-0.1.3%E2%80%930.2.6-8a948f.svg)](#兼容性)
 
 **纯客户端视角**：不修改任何游戏代码，无构建步骤，无运行时依赖，随页面加载即用；游戏更新后照常工作（服务端补丁为可选增强，见下）。
@@ -29,6 +29,7 @@
 | 在线玩家 | 从公开的 `/healthz` 取：在线人数、房间数、进行中对局、AI 队友、观战、连接数、服务版本、运行时长 |
 | 本局 | 房间码、模式、难度、席位、你的座位、阶段中文名、回合 x/14、倒计时 |
 | **邀请** | **免密钥链接**：在同盟中给出 `?room=CODE` 链接，一键复制，好友打开即自动加入；**在线名单**：列出服务器上所有在线玩家（大厅 / 同盟中 / 对局中），每人一个「邀请」按钮，服务端把你的房间码定向推给对方；**收到邀请**：面板顶部弹横幅，点「立即加入」直接进房。旧服务端没有名单接口时自动降级（只隐藏名单，复制链接照常） |
+| **干员伤害统计** | 独立窗口实时显示每名干员本回合伤害、全局累计伤害、伤害类型，以及当前和最近结束的增益 / 减益与持续时间；兼容 `m.unitStats`、`b.ev`、`m.field`、`m.result` 等协议帧 |
 | 性能 | FPS 与帧时间。战斗在每个玩家的浏览器里本地模拟，这个数字才是低端设备卡不卡的关键 |
 | 事件日志 | 关键帧按严重度分色：握手、房间、阶段切换、结算、房间关闭、服务端错误（含 `detail` 明细），可筛选 / 展开 / 复制 |
 | 关于 | 作者信息、数据来源、免责声明 |

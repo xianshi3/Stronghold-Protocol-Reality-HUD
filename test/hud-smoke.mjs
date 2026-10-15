@@ -46,7 +46,7 @@ const api = await page.evaluate(() => ({
   author: globalThis.__REALITY_HUD__?.author,
 }));
 check("面板已挂载", api.mounted);
-check("版本 1.4.2", api.ver === "1.4.2", String(api.ver));
+check("版本 1.5.0", api.ver === "1.5.0", String(api.ver));
 check("作者署名 Reality", api.author === "Reality", String(api.author));
 
 // v1.4.2: no brand text in the chrome, 邀请 leads the sections, the footer links are icons
@@ -113,7 +113,7 @@ const menuOpen = await page.evaluate(() => {
   };
 });
 check("菜单能打开", menuOpen.open && menuOpen.visible);
-check("菜单含 4 项", menuOpen.rows.join(",") === "rh-menu-pin,rh-menu-mini,rh-menu-pause,rh-menu-settings", menuOpen.rows.join(","));
+check("菜单含 5 项", menuOpen.rows.join(",") === "rh-menu-pin,rh-menu-mini,rh-menu-pause,rh-menu-damage,rh-menu-settings", menuOpen.rows.join(","));
 
 // toggling a row flips its own state text
 const pinToggle = await page.evaluate(() => {

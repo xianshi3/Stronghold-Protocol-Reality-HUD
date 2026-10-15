@@ -1,7 +1,7 @@
 {
   "name": "reality-hud",
-  "version": "1.4.0",
-  "description": "可拖拽的悬浮窗 mod：连接状态、延迟曲线、在线人数、本局状态、邀请好友（免密钥）、性能、事件日志 | A draggable floating HUD overlay mod for Stronghold Protocol",
+  "version": "1.5.0",
+  "description": "可拖拽的悬浮窗 mod：连接状态、延迟曲线、在线人数、本局状态、邀请好友、干员伤害与效果统计、性能、事件日志 | A draggable floating HUD overlay mod for Stronghold Protocol",
   "keywords": [
     "mod",
     "hud",
@@ -23,7 +23,8 @@
   "type": "module",
   "scripts": {
     "test": "node test/hud-smoke.mjs",
-    "test:mobile": "node test/hud-mobile.mjs"
+    "test:mobile": "node test/hud-mobile.mjs",
+    "test:damage": "node test/hud-damage.mjs"
   },
   "devDependencies": {
     "puppeteer-core": "^25.12.0"

@@ -2,6 +2,11 @@
 
 All notable changes to this project. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-10-15
+
+- 新增独立「干员伤害统计」窗口：实时显示本回合 / 全局伤害、伤害类型、增益减益类型与持续时间。
+- 兼容 `m.unitStats`、`m.field`、`b.start`、`b.ev`、`b.result`、`m.result` 等新旧战斗帧；旧协议没有来源 id 时显示未归属伤害。
+
 ## [Unreleased]
 
 ## [1.4.2] - 2026-10-15
