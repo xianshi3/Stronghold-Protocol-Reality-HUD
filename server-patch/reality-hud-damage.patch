@@ -272,10 +272,10 @@ index a4b27420..65f04bb6 100644
    if (target.elem[el] >= max && target.alive) elementBurst(battle, source, target, el);
 diff --git a/test/match/reality-hud-damage.test.js b/test/match/reality-hud-damage.test.js
 new file mode 100644
-index 00000000..fecd8c63
+index 00000000..1e115bcc
 --- /dev/null
 +++ b/test/match/reality-hud-damage.test.js
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,229 @@
 +// test/match/reality-hud-damage.test.js — the Reality HUD damage patch's server half
 +// (Stronghold-Protocol-Reality-HUD `server-patch/reality-hud-damage.patch`): every m.public player row carries
 +//   hudDmg { round, dmg, total, settled } — `dmg` is the damage of round `round` (a normal round stamps the damage
@@ -290,6 +290,7 @@ index 00000000..fecd8c63
 +import assert from 'node:assert/strict';
 +import { makeMatch } from './harness.js';
 +import { MatchViews } from '../../server/match/match/views.js';
++import { validateC2S } from '../../shared/protocol.js';
 +import { PHASE } from '../../shared/constants.js';
 +
 +/** _hudDmgView bound to a stub `this`: the method reads only `this.round` / `this.fields`. */
@@ -496,6 +497,13 @@ index 00000000..fecd8c63
 +  assert.equal(m.handle('p_0', { t: 'm.hudDmg', dmg: 500 }).ok, true);
 +  assert.equal(rowOf(m, 'p_0').dmg, 0, 'no relay in server-run mode');
 +  m.dispose();
++});
++
++test('hudDmg relay: the protocol accepts m.hudDmg {dmg} (the client-side send whitelist)', () => {
++  assert.equal(validateC2S({ t: 'm.hudDmg', dmg: 123 }), null);
++  assert.equal(validateC2S({ t: 'm.hudDmg', dmg: 123.5 }), null);
++  assert.equal(typeof validateC2S({ t: 'm.hudDmg' }), 'string', 'the dmg is required');
++  assert.equal(typeof validateC2S({ t: 'm.hudDmg', dmg: -1 }), 'string', 'negative rejected');
 +});
 diff --git a/test/sim/battle.test.js b/test/sim/battle.test.js
 index 0edbcd3d..4f2d6ae5 100644

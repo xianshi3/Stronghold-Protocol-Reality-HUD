@@ -11,8 +11,12 @@ All notable changes to this project. Format based on [Keep a Changelog](https://
 
 ### Changed
 
-- 服务端补丁更新（`server-patch/reality-hud-damage.patch` 重新生成：8 个代码文件 + 3 篇文档 + 3 个测试）：`m.public.hudRelay` 广告、C2S `m.hudDmg` 路由与限流、`_hudDmgView` 并入上报值、结算盖章清除上报；协议文档同步。已打 1.7.1 补丁的服务器**建议更新**（旧补丁照常工作，只是没有实时上报）。
-- 测试：`npm run test:damage` 49 项（新增 2 项上报用例）；服务端补丁测试 4 → 6 例。
+- 服务端补丁更新（`server-patch/reality-hud-damage.patch` 重新生成：9 个代码文件 + 3 篇文档 + 3 个测试）：`m.public.hudRelay` 广告、C2S `m.hudDmg` 路由与限流、`_hudDmgView` 并入上报值、结算盖章清除上报；协议文档同步。已打 1.7.1 补丁的服务器**建议更新**（旧补丁照常工作，只是没有实时上报）。
+- 测试：`npm run test:damage` 49 项（新增 2 项上报用例）；服务端补丁测试 4 → 7 例。
+
+### Fixed
+
+- **（同日）实时上报被客户端协议校验拦截**：游戏的 `net.send` 会用 `validateC2S` 白名单校验外发消息，`m.hudDmg` 未注册进 C2S 协议表时会被客户端直接拒发（控制台可见 `refusing invalid m.hudDmg`）——补丁新增 `shared/protocol.js` 的 C2S 条目放行；HUD 本身无需更新（协议表由服务器下发）。
 
 ## [1.7.2] - 2026-10-16
 
