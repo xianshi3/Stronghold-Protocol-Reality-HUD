@@ -51,7 +51,7 @@ const AUTHOR = Object.freeze({
   repoLabel: 'xianshi3/Stronghold-Protocol-Reality-HUD',
 });
 
-const MOD_VERSION = '1.7.2';
+const MOD_VERSION = '1.8.0';
 
 const DEFAULTS = {
   x: null,               // null = park it on the right edge (computed on first show)
@@ -303,6 +303,8 @@ const state = {
     paused: false,
     finished: false,
     serverDmg: false, // m.public players[].hudDmg seen → the server runs the Reality HUD damage patch
+    serverRelay: false, // m.public.hudRelay seen → the server accepts the HUD's m.hudDmg live-damage relay (1.8.0)
+    lastHudDmgRelay: null,
     phase: null,
     lastFrameAt: 0,
   },
@@ -670,6 +672,7 @@ function resetDamageRound(round) {
   if (state.damage.round == null) state.damage.round = n;
   if (state.damage.round === n) return;
   state.damage.round = n;
+  state.damage.lastHudDmgRelay = null;
   for (const rec of state.damage.units.values()) {
     rec.current = 0;
     rec.currentTypes = emptyDamageTypes();
@@ -708,6 +711,8 @@ function resetDamageSession() {
   state.damage.paused = false;
   state.damage.finished = false;
   state.damage.serverDmg = false;
+  state.damage.serverRelay = false;
+  state.damage.lastHudDmgRelay = null;
   state.damage.phase = null;
   state.damage.unattributed = { current: 0, total: 0, currentTypes: emptyDamageTypes(), totalTypes: emptyDamageTypes() };
   scheduleRender('damage');
@@ -727,8 +732,37 @@ function setDamageLifecycle({ active = false, paused = false, phase = null } = {
     state.damage.teamEffects.clear();
     state.damage.attackSources.clear();
   }
+  setHudDmgRelay(state.damage.collecting);
   scheduleRender('damage');
 }
+
+/**
+ * 1.8.0: relay this HUD's own live damage to a server that advertises `m.public.hudRelay` (the damage patch's relay
+ * extension): the server merges it into m.public players[].hudDmg, so every teammate sees this player's 本回合 live
+ * during a client-run normal round / 联防, not only at settlement. Gated on the advertisement — an older or vanilla
+ * server never receives the message (it would answer with an error toast).
+ */
+function reportHudDmg() {
+  if (!state.damage.serverRelay || state.damage.paused || !state.damage.collecting) return;
+  if (state.damage.phase !== 'COMBAT' && state.damage.phase !== 'UNITE') return;
+  const mine = state.damage.players.get(state.playerId);
+  const dmg = Math.round(Number(mine && mine.current) || 0);
+  if (!(dmg > 0) || dmg === state.damage.lastHudDmgRelay) return;
+  state.damage.lastHudDmgRelay = dmg;
+  try { globalThis.__SP__?.net?.send?.('m.hudDmg', { dmg }); } catch { /* no net in some tests */ }
+}
+
+function setHudDmgRelay(running) {
+  if (running && !hudDmgRelayTimer) {
+    hudDmgRelayTimer = setInterval(reportHudDmg, 2000);
+    reportHudDmg();
+  } else if (!running && hudDmgRelayTimer) {
+    clearInterval(hudDmgRelayTimer);
+    hudDmgRelayTimer = null;
+  }
+}
+
+let hudDmgRelayTimer = null;
 
 function startDamageBattle(battleId = null) {
   if (battleId != null) state.damage.battleId = String(battleId);
@@ -2996,6 +3030,7 @@ function attachNet() {
       case 'm.public': {
         const prevPhase = state.match?.phase;
         state.match = msg;
+        if (msg.hudRelay === true) state.damage.serverRelay = true;
         parseDamageFrame(msg);
         mergePublicPlayerDamage(msg);
         if (msg.phase && msg.phase !== prevPhase) {

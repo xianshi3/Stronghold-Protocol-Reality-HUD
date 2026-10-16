@@ -2,6 +2,18 @@
 
 All notable changes to this project. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.8.0] - 2026-10-16
+
+### Added
+
+- **正常回合 / 联防队友伤害实时同步（服务端补丁扩展）**：客户端战斗模式下，服务器看不见客户端上正在模拟的战场伤害——此前队友的本回合伤害要等**回合结算**（Boss 轮约每秒）才可见，就是「只有结束才算伤害」。现在打上新版补丁的服务器在 `m.public` 顶层带 `hudRelay` 广告；HUD 看到广告后，在自家战场战斗（COMBAT / 联防）时每 2 秒把**自己**的实时伤害经 `m.hudDmg { dmg }` 上报，服务器并入 `m.public players[].hudDmg` 的实时份额（未 settled）——所有队友屏幕实时看到各自的伤害；回合结算照旧用服务器结算值校正（上报值被清除，绝不重复计数）。
+- **上报零打扰**：HUD 只在看到 `hudRelay` 广告后才上报——旧服务器 / 未打补丁服务器收不到任何未知消息（也就不会弹错误提示）；服务器侧限流 1.5s/人、只收 COMBAT / 联防、非法值拒绝、服务器运行模式自动忽略；未装 HUD 的玩家不报，其行照旧结算才可见。
+
+### Changed
+
+- 服务端补丁更新（`server-patch/reality-hud-damage.patch` 重新生成：8 个代码文件 + 3 篇文档 + 3 个测试）：`m.public.hudRelay` 广告、C2S `m.hudDmg` 路由与限流、`_hudDmgView` 并入上报值、结算盖章清除上报；协议文档同步。已打 1.7.1 补丁的服务器**建议更新**（旧补丁照常工作，只是没有实时上报）。
+- 测试：`npm run test:damage` 49 项（新增 2 项上报用例）；服务端补丁测试 4 → 6 例。
+
 ## [1.7.2] - 2026-10-16
 
 ### Fixed

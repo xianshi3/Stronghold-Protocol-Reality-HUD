@@ -1,7 +1,7 @@
 {
   "id": "reality-hud",
   "name": "Reality HUD",
-  "version": "1.7.2",
+  "version": "1.8.0",
   "description": "分页式可拖拽悬浮窗：首页总览（延迟曲线、连接状态、在线人数）+ 卡片进入本局、邀请好友、伤害、服务、性能、事件日志与设置页；伤害页集成干员 / 玩家 / 敌人三张统计表，一键弹成独立窗口。",
   "author": "Reality",
   "authorUrl": "https://github.com/xianshi3",

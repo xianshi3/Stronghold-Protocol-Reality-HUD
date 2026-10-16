@@ -1,6 +1,6 @@
 {
   "name": "reality-hud",
-  "version": "1.7.2",
+  "version": "1.8.0",
   "description": "分页式可拖拽悬浮窗：首页总览 + 本局 / 邀请 / 伤害 / 服务 / 性能 / 日志 / 设置页；伤害页集成干员、玩家、敌人三张统计表，每张可「独立窗口」弹成悬浮窗 | A draggable, page-based floating HUD overlay mod for Stronghold Protocol",
   "keywords": [
     "mod",

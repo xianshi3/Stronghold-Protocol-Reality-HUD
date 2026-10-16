@@ -25,7 +25,7 @@ const html = `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="
 const listeners = new Map();
 const net = { status: "online", lastError: null, playerId: "p1", _listeners: listeners,
   on(type, fn) { if (!listeners.has(type)) listeners.set(type, []); listeners.get(type).push(fn); },
-  send() {},
+  send(t, fields) { (globalThis.__spSends = globalThis.__spSends || []).push([t, fields]); },
 };
 globalThis.__SP__ = { net, store: { get: () => ({ session: { entered: true }, me: { playerId: "p1" } }) } };
 </script><script type="module" src="/hud.js"></script>`;
@@ -414,6 +414,19 @@ check("联防：帮防队友的命中记在各自干员上（帮防甲 100、帮
 check("联防：玩家行各归各（玩家一 150、队友 300、小队长 50）",
   rowFor(rows, "玩家一")[1] === "150" && rowFor(rows, "队友")[1] === "300" && rowFor(rows, "小队长")[1] === "50",
   JSON.stringify(rows));
+
+// ---- 1.8.0: the HUD relays its own live damage once the server advertises hudRelay -----------------
+const sends = () => page.evaluate(() => globalThis.__spSends || []);
+check("未广告 hudRelay 的服务器：零上报（不给旧服务器发未知消息）", (await sends()).length === 0, JSON.stringify(await sends()));
+await emit({ t: "m.public", round: 8, phase: "COMBAT", lastRound: 14, hudRelay: true, players: [
+  { playerId: "p1", name: "玩家一" },
+  { playerId: "p2", name: "队友" },
+  { playerId: "p3", name: "小队长" },
+] });
+await wait(2300);
+const out = await sends();
+check("服务器广告 hudRelay 后，HUD 定时上报自己的实时伤害（m.hudDmg 150）",
+  out.some((s) => s[0] === "m.hudDmg" && s[1] && s[1].dmg === 150), JSON.stringify(out));
 
 // vanilla frames keep the attack-order guess, but only while it names exactly one attacker
 await emit({ t: "m.field", fieldId: "f4", units: [

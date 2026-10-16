@@ -7,7 +7,7 @@ Reality HUD 的核心功能（延迟、服务状态、本局、性能、日志�
 | 补丁 | 给什么 | 规模 |
 |---|---|---|
 | `reality-hud-invite.patch` | 在线名单 + 一键邀请 | 4 个代码文件 + 1 个文档 |
-| `reality-hud-damage.patch` | 队友伤害实时同步（`m.public` 玩家行 `hudDmg`）+ 命中归属来源 id | 5 个代码文件 + 3 篇文档 + 3 个测试 |
+| `reality-hud-damage.patch` | 队友伤害实时同步（`m.public` 玩家行 `hudDmg` + 客户端战斗的 `m.hudDmg` 实时上报）+ 命中归属来源 id | 8 个代码文件 + 3 篇文档 + 3 个测试 |
 
 ## 应用
 
@@ -38,13 +38,16 @@ curl -s http://127.0.0.1:3000/api/players   # 应返回 {"ok":true,"players":[..
 
 | 文件 | 改动 |
 |---|---|
-| `server/match/match/views.js` | `_hudDmgView(ps)`：组装 `m.public.players[].hudDmg { round, dmg, total, settled }` —— 本回合伤害（结算盖章 + Boss 轮仍在进行的客户端战场 `f.bossBy` 实时分摊）、整场累计（`stats.dmgDealt` + 尚未结算的 Boss 实时份额，两者绝不重复）与 `settled` 标记（本回合是否已盖章完整——客户端据此把本地实时估算**校正**为服务器值，可升可降；未标记的帧只作下限）；`_hudCreditDmg(ps, d)`：结算盖章；`publicView` 玩家行加 `hudDmg` 字段 |
-| `server/match/PlayerState.js` | `hudRound` / `hudDmg` 字段初始化 |
+| `server/match/match/views.js` | `_hudDmgView(ps)`：组装 `m.public.players[].hudDmg { round, dmg, total, settled }` —— 本回合伤害（结算盖章 + 仍在进行的实时份额：Boss 轮客户端战场的 `f.bossBy` 分摊，或 HUD 自己上报的 `m.hudDmg`）、整场累计（`stats.dmgDealt` + 尚未结算的实时份额，两者绝不重复）与 `settled` 标记（本回合是否已盖章完整——客户端据此把本地实时估算**校正**为服务器值，可升可降；未标记的帧只作下限）；`_hudCreditDmg(ps, d)`：结算盖章并清除上报值；`publicView` 玩家行加 `hudDmg` 字段、顶层加 `hudRelay: true` 广告 |
+| `server/match/PlayerState.js` | `hudRound` / `hudDmg` 字段初始化 + `hudLiveRound` / `hudLiveDmg` / `hudLiveAt`（HUD 实时上报暂存） |
+| `server/match/match/reports.js` | `_onHudDmg(ps, msg)`：接受 `m.hudDmg { dmg }`（仅客户端战斗模式的 COMBAT / 联防；每人限流 1.5s；非法值 `BAD_MSG`；数值未变不上报）；盖章后自动失效 |
+| `server/match/match/intents.js` | C2S 路由增加 `case 'm.hudDmg'` |
+| `server/match/match/platform.js` | 消息白名单增加 `m.hudDmg`（HUD 专属扩展类型，原版客户端不会发送） |
 | `server/match/match/settle.js` | 普通回合结算（本场结果 + 联防分摊）后盖章本回合伤害 |
 | `server/match/match/bossRounds.js` | `_finishFinal` 把 Boss 伤害写进 `stats.dmgDealt` 的同刻盖章（该伤害自此只算一次） |
 | `server/sim/damage.js` | 带来源的命中事件追加权威来源单位 id（元组第 6 项；无来源命中保持 4 元素旧形状，游戏自身客户端只读前几项、不受影响）——HUD 从此不再按攻击顺序猜归属 |
 | `docs/design/network.md`、`docs/META.md`、`docs/SIM.md` | 协议文档同步 |
-| `test/match/reality-hud-damage.test.js` | 4 例：视图数学（回合戳 / 实时份额 / 不重复 / `settled` 判定）、普通回合盖章与回合切换清零、Boss 轮实时值（未结算）与结算不重复计数、联防回合归属 |
+| `test/match/reality-hud-damage.test.js` | 6 例：视图数学（回合戳 / 实时份额 / 不重复 / `settled` 判定）、普通回合盖章与回合切换清零、Boss 轮实时值（未结算）与结算不重复计数、联防回合归属、`m.hudDmg` 上报（广告 / 限流 / 非法值 / 结算清除 / 服务器运行模式忽略） |
 | `test/sim/damage-attribution.test.js` | 3 例：来源标注形状（带 / 不带标记槽）、来源 id 正确性（含 `defIgnorePct` 命中） |
 | `test/sim/battle.test.js` | 战斗事件流 wire format 断言更新（带来源事件为 6 元素元组，末位为已 spawn 单位 id） |
 
@@ -55,11 +58,12 @@ curl -s http://127.0.0.1:3000/api/players   # 应返回 {"ok":true,"players":[..
 - **结算快照校正（v1.7.1）**：`settled: true` 的帧表示该回合已盖章完整（且没有仍在场外的实时份额）。HUD 侧的实时数字由原始命中事件累加（击杀溢出、元素条积累、逐跳取整会略高于实际扣血），因此带标记的帧会把本回合与全局累计**直接写为服务器值**（可升可降，类型拆分成比例跟随）——修复「本回合每个人屏幕上的数字不一样」；Boss 轮的实时帧与未打本补丁的旧服务器不带标记，沿用只上不下的旧行为。
 - **命中归属来源 id（v1.7.1）**：仿真事件流的伤害事件原本不带来源，HUD 只能按攻击先后顺序猜配对——近战即时命中插队到还在飞行的远程弹道之间时两次命中互换，元素条与多段攻击还会多吞队列条目；共享战场（联防 / Boss 配对，视角内含队友单位）时互换跨玩家，显示成**队友的名字**。现在带来源的命中事件让 HUD 直接采信权威单位 id（无来源命中、vanilla / 旧补丁服务器照旧走按序回退路径）——修复「我打的伤害显示的是别人的名字」。
 - **Boss 轮实时值**：来自客户端上报的共享血量池分摊（`f.bossBy`），沿用原版 `_creditBoss` 的场地时钟预算封顶（反作弊不变）；最终仍以客户端 `b.result` 为准。
-- **不泄露新信息**：这些数字在 `m.result` 结算时本来就发给全员，补丁只是把它提前到回合结算时（Boss 轮约每秒）——没有房间码、token 或任何私密视图。
+- **正常回合 / 联防实时上报（v1.8.0）**：客户端战斗模式下服务器看不见客户端上正在模拟的战场伤害，此前队友的本回合伤害要等回合结算才可见。新补丁在 `m.public` 顶层加 `hudRelay: true` 广告；HUD 看到广告后，每 2 秒把**自己**的实时伤害经 `m.hudDmg { dmg }` 上报（仅 COMBAT / 联防、伤害为正时才发），服务器并入 `m.public.players[].hudDmg` 的实时份额——所有队友屏幕实时可见，回合结算照旧盖章校正（上报值被清除，绝不重复计数）。限流 1.5s/人；未装 HUD 的玩家不报（其行照旧结算才可见）；HUD 只在看到广告后才上报，旧服务器收不到任何未知消息。
+- **不泄露新信息**：这些数字在 `m.result` 结算时本来就发给全员，补丁只是把它提前到回合结算时（Boss 轮约每秒；正常回合经上报约每 2 秒）——没有房间码、token 或任何私密视图。
 
 ## 验证
 
-- `node --test test/match/reality-hud-damage.test.js` —— 伤害补丁 4 例（视图数学 / 普通回合盖章 / Boss 轮实时与不重复计数 / 联防回合归属）
+- `node --test test/match/reality-hud-damage.test.js` —— 伤害补丁 6 例（视图数学 / 普通回合盖章 / Boss 轮实时与不重复计数 / 联防回合归属 / `m.hudDmg` 实时上报）
 - `node --test test/sim/damage-attribution.test.js` —— 仿真事件归属契约 3 例（带 / 不带标记槽的形状、来源 id 正确性）
 - `node --test test/lobby-invite.test.js` —— 邀请补丁 5 例
 - `node test/hud-smoke.mjs http://127.0.0.1:3000` —— HUD 侧 67 项断言（含伤害页、模拟 `room.invited` 横幅与旧服务器降级路径）
