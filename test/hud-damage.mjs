@@ -200,6 +200,49 @@ await wait();
 const op3 = rowFor(await operatorRows(), "测试干员");
 check("回合切换：干员本回合清零、全局保留 200", op3 && op3[1] === "0" && op3[2] === "200", JSON.stringify(op3));
 
+// ---- several teammates: every row keeps its own numbers (no swap, no double count) ------------
+// 队友此前累计 900（上面的结算），本回合 +61 → 961；小队长是全新一行，233 不翻倍
+const teamFrame = (order) => {
+  const rows = {
+    p1: { playerId: "p1", name: "玩家一" },
+    p2: { playerId: "p2", name: "队友", hudDmg: { round: 4, dmg: 61, total: 961 } },
+    p3: { playerId: "p3", name: "小队长", hudDmg: { round: 4, dmg: 233, total: 233 } },
+  };
+  return { t: "m.public", round: 4, phase: "COMBAT", lastRound: 14, players: order.map((k) => rows[k]) };
+};
+await emit(teamFrame(["p1", "p2", "p3"]));
+await wait();
+rows = await playerRows();
+check("三个队友各归各：队友 61/961、小队长 233/233",
+  rowFor(rows, "队友")[1] === "61" && rowFor(rows, "队友")[2] === "961"
+  && rowFor(rows, "小队长")[1] === "233" && rowFor(rows, "小队长")[2] === "233", JSON.stringify(rows));
+check("自己的行不混入队友数字（0/200）",
+  rowFor(rows, "玩家一")[1] === "0" && rowFor(rows, "玩家一")[2] === "200", JSON.stringify(rows));
+// the same frame again (the server refreshes the view): the high-water guard must not add it twice
+await emit(teamFrame(["p1", "p2", "p3"]));
+await wait();
+rows = await playerRows();
+check("同一帧重复到达不重复计入（仍 61/961 与 233/233）",
+  rowFor(rows, "队友")[1] === "61" && rowFor(rows, "队友")[2] === "961"
+  && rowFor(rows, "小队长")[2] === "233", JSON.stringify(rows));
+// the server lists them in another order: rows follow playerId, never the position in the frame
+await emit(teamFrame(["p3", "p1", "p2"]));
+await wait();
+rows = await playerRows();
+check("乱序帧不按位置串行（队友 61/961、小队长 233/233）",
+  rowFor(rows, "队友")[2] === "961" && rowFor(rows, "小队长")[2] === "233", JSON.stringify(rows));
+// a later frame of the same round tops up only the difference and keeps the other row untouched
+await emit({ t: "m.public", round: 4, phase: "COMBAT", lastRound: 14, players: [
+  { playerId: "p1", name: "玩家一" },
+  { playerId: "p2", name: "队友", hudDmg: { round: 4, dmg: 90, total: 990 } },
+  { playerId: "p3", name: "小队长", hudDmg: { round: 4, dmg: 233, total: 233 } },
+] });
+await wait();
+rows = await playerRows();
+check("同回合刷新只补差额（队友 90/990，小队长不动）",
+  rowFor(rows, "队友")[1] === "90" && rowFor(rows, "队友")[2] === "990"
+  && rowFor(rows, "小队长")[1] === "233" && rowFor(rows, "小队长")[2] === "233", JSON.stringify(rows));
+
 // ---- the menu row opens the page -------------------------------------------------------------
 await page.click("#rh-page-damage .rh-back");
 await wait();
