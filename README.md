@@ -1,20 +1,19 @@
-# Stronghold-Protocol-Reality-HUD
+# Reality HUD
 
-> **Reality HUD** —— 可拖拽的悬浮窗 mod，叠加在 [《卫戍协议：盟约》](https://github.com/sganggs/Stronghold-Protocol)（Stronghold Protocol，**原项目 / Upstream**）游戏页面之上：连接状态、真实延迟曲线、在线人数、本局信息、**免密钥邀请好友**、性能与事件日志，一屏看全。
+> 可拖拽的悬浮窗 mod，叠加在 [《卫戍协议：盟约》](https://github.com/sganggs/Stronghold-Protocol)（Stronghold Protocol，**原项目 / Upstream**）游戏页面之上：连接状态、真实延迟曲线、在线人数、本局信息、**免密钥邀请好友**、**实时伤害统计**、性能与事件日志，一屏看全。
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-4ed8af.svg)](LICENSE)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-4ed8af.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-1.5.1-4ed8af.svg)](CHANGELOG.md)
 [![Game version](https://img.shields.io/badge/game-0.1.3%E2%80%930.2.6-8a948f.svg)](#兼容性)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-4ed8af.svg)](#贡献者--contributors)
 
 **纯客户端视角**：不修改任何游戏代码，无构建步骤，无运行时依赖，随页面加载即用；游戏更新后照常工作（服务端补丁为可选增强，见下）。
 
 | | |
 |---|---|
-| **作者 / Author** | **Reality** |
-| **GitHub** | <https://github.com/xianshi3> (`@xianshi3`) |
+| **作者 / Author** | **Reality**（[@xianshi3](https://github.com/xianshi3)） |
 | **原项目 / Upstream** | [sganggs/Stronghold-Protocol](https://github.com/sganggs/Stronghold-Protocol) —— 《卫戍协议：盟约》浏览器游戏（Arknights 粉丝复刻，GPL-3.0-or-later） |
-| **博客 / Blog** | <https://reality-blog.asia> |
-| **许可 / License** | MIT（见 [`LICENSE`](LICENSE)） |
+| **许可 / License** | [GPL-3.0-or-later](LICENSE)（与游戏本体一致） |
 
 ![Reality HUD 悬浮窗](docs/hud-overview.png)
 
@@ -29,7 +28,7 @@
 | 在线玩家 | 从公开的 `/healthz` 取：在线人数、房间数、进行中对局、AI 队友、观战、连接数、服务版本、运行时长 |
 | 本局 | 房间码、模式、难度、席位、你的座位、阶段中文名、回合 x/14、倒计时 |
 | **邀请** | **免密钥链接**：在同盟中给出 `?room=CODE` 链接，一键复制，好友打开即自动加入；**在线名单**：列出服务器上所有在线玩家（大厅 / 同盟中 / 对局中），每人一个「邀请」按钮，服务端把你的房间码定向推给对方；**收到邀请**：面板顶部弹横幅，点「立即加入」直接进房（已在其他同盟中则一键换房：服务端先退原房间；对局中会拒绝并说明）。旧服务端没有名单接口时自动降级（只隐藏名单，复制链接照常） |
-| **干员伤害统计** | 独立窗口实时显示每名干员本回合伤害、全局累计伤害、伤害类型，以及当前和最近结束的增益 / 减益与持续时间；兼容 `m.unitStats`、`b.ev`、`m.field`、`m.result` 等协议帧 |
+| **实时伤害统计** | **三个独立窗口（干员 / 玩家 / 敌方）**：每回合与全局累计伤害、伤害类型、来源归属与本地化，以及增益 / 减益类型与持续时间；兼容 `m.unitStats`、`b.ev`、`m.field`、`m.result` 等新旧协议帧 |
 | 性能 | FPS 与帧时间。战斗在每个玩家的浏览器里本地模拟，这个数字才是低端设备卡不卡的关键 |
 | 事件日志 | 关键帧按严重度分色：握手、房间、阶段切换、结算、房间关闭、服务端错误（含 `detail` 明细），可筛选 / 展开 / 复制 |
 | 关于 | 作者信息、数据来源、免责声明 |
@@ -42,8 +41,8 @@
 [Stronghold Protocol](https://github.com/sganggs/Stronghold-Protocol) — a non-commercial fan remake of the
 Arknights「卫戍协议：盟约」co-op mode. It shows the connection state, real RTT with a sparkline, server
 population, the current match, invites (**password-free `?room=` links**, an online roster, one-tap
-invitations), FPS and an event log — without modifying a single line of game code. MIT-licensed; the
-author is [@xianshi3](https://github.com/xianshi3). The interface is Chinese-first.
+invitations), real-time damage windows, FPS and an event log — without modifying a single line of game code.
+GPL-3.0-or-later; the author is [@xianshi3](https://github.com/xianshi3). The interface is Chinese-first.
 
 ## 兼容性
 
@@ -99,17 +98,32 @@ systemctl restart stronghold        # 重启后生效
 
 ## 开发与测试
 
-mod 本体是两个静态文件（`hud.js` + `hud.css`），无构建、无依赖。冒烟测试用 puppeteer 驱动真实页面，40 项断言（挂载、折叠、菜单、真实指针点按菜单行、邀请栏、模拟邀请横幅、隐藏唤回浮标、无页面错误……）：
+mod 本体是两个静态文件（`hud.js` + `hud.css`），无构建、无依赖。三个自测都用 puppeteer 驱动真实页面：
+
+| 测试 | 命令 | 覆盖 |
+|---|---|---|
+| 桌面冒烟 | `npm test` | 50 项断言：挂载、折叠、菜单、真实指针点按、邀请栏、模拟邀请横幅、三个伤害窗口、隐藏唤回浮标、无页面错误…… |
+| 手机模拟 | `npm run test:mobile` | 7 项断言：折叠条、浮标、触屏唤回（截图到系统临时目录） |
+| 伤害窗口 | `npm run test:damage` | 自带假服务器：三个窗口的归属、分栏与本地化 |
 
 ```bash
 npm install                 # 只装 devDependency（puppeteer-core）
 node server/index.js        # 在游戏仓库起一个本地服务器（默认 http://127.0.0.1:3000）
-npm test                    # = node test/hud-smoke.mjs [URL]，桌面冒烟 40 断言
-npm run test:mobile         # = node test/hud-mobile.mjs [URL]，手机模拟 7 断言（截图到系统临时目录）
+npm test                    # 桌面冒烟 50 断言
+npm run test:mobile         # 手机模拟 7 断言
+npm run test:damage         # 伤害窗口自测（不需要游戏服务器）
 # Windows 以外设置 CHROME_PATH 指向 Chrome 可执行文件
 ```
 
 约定：只用浏览器公开 API 与游戏公开接口；每帧预算内不碰布局读写；面板隐藏 / 暂停时停止一切定时器。
+
+## 贡献者 / Contributors
+
+| <img src="https://github.com/xianshi3.png?size=96" width="56" alt="xianshi3"> | <img src="https://github.com/Kriss-wq.png?size=96" width="56" alt="Kriss-wq"> |
+|:---:|:---:|
+| **Reality** · [@xianshi3](https://github.com/xianshi3)<br>作者 / 维护者 | **Kriss-wq** · [@Kriss-wq](https://github.com/Kriss-wq)<br>[实时伤害统计窗口（PR #3）](https://github.com/xianshi3/Stronghold-Protocol-Reality-HUD/pull/3) |
+
+欢迎提 Issue 与 PR——贡献前请先读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 更新日志
 
@@ -117,6 +131,6 @@ npm run test:mobile         # = node test/hud-mobile.mjs [URL]，手机模拟 7 
 
 ## 许可与声明
 
-- 本 mod 以 [MIT](LICENSE) 发布，Copyright (c) 2026 Reality。
-- 它所附加的游戏《卫戍协议：盟约》以 GPL-3.0-or-later 发布，是明日方舟 / Arknights 的**非官方粉丝作品**。本 mod 是独立的衍生作品，运行时加载，**不含任何游戏代码与游戏素材**，安装它不改变游戏本体或任何游戏内容的授权。
+- 本 mod 以 **[GPL-3.0-or-later](LICENSE)** 发布（与所附加的游戏同协议），Copyright (c) 2026 Reality。
+- 它所附加的游戏《卫戍协议：盟约》以 GPL-3.0-or-later 发布，是明日方舟 / Arknights 的**非官方粉丝作品**。本 mod 独立开发、运行时加载，**不含任何游戏代码与游戏素材**，安装它不改变游戏本体或任何游戏内容的授权。
 - 与 Hypergryph、Yostar 及 Stronghold Protocol 项目作者无任何关联；非商业用途。

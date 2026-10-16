@@ -2,8 +2,8 @@
  * Reality HUD — a draggable in-page overlay for Stronghold Protocol.
  *
  * Author: Reality · @xianshi3 · https://reality-blog.asia
- * License: MIT (see LICENSE in this folder). The game it attaches to is GPL-3.0; this
- * overlay is a separate work loaded at runtime and never modifies game code.
+ * License: GPL-3.0-or-later (see LICENSE in this folder), the same license as the game
+ * it attaches to; this overlay is loaded at runtime and never modifies game code.
  *
  * What it shows (client-side only — it never asks the server for anything beyond the public
  * `/healthz` and `/api/players`):
@@ -1797,7 +1797,7 @@ function buildUi() {
         h('dt', { text: '网名' }), h('dd', { text: AUTHOR.name }),
         h('dt', { text: 'GitHub' }), h('dd', {}, h('a', { class: 'rh-link', href: AUTHOR.repo, target: '_blank', rel: 'noopener noreferrer', title: AUTHOR.repo, text: AUTHOR.repoLabel })),
         h('dt', { text: '博客' }), h('dd', {}, h('a', { class: 'rh-link', href: AUTHOR.blog, target: '_blank', rel: 'noopener noreferrer', text: AUTHOR.blogLabel })),
-        h('dt', { text: '许可' }), h('dd', { text: 'MIT（独立作品，不含游戏代码与素材）' }),
+        h('dt', { text: '许可' }), h('dd', { text: 'GPL-3.0-or-later（运行时加载，不含游戏代码与素材）' }),
         h('dt', { text: '版本' }), h('dd', { text: MOD_VERSION }),
       ),
       h('p', { class: 'rh-about-note', text: '非官方玩家自制工具，与 Hypergryph / Yostar 及本项目作者无关联。《明日方舟》相关素材版权归原权利人所有。' }),
@@ -1863,7 +1863,7 @@ function buildUi() {
       h('a', { class: 'rh-link rh-icon-link', href: AUTHOR.repo, target: '_blank', rel: 'noopener noreferrer', title: 'GitHub 仓库', 'aria-label': 'GitHub 仓库' }, svgIcon(ICON_GITHUB)),
       h('a', { class: 'rh-link rh-icon-link', href: AUTHOR.blog, target: '_blank', rel: 'noopener noreferrer', title: `博客 ${AUTHOR.blogLabel}`, 'aria-label': `博客 ${AUTHOR.blogLabel}` }, svgIcon(ICON_BLOG)),
     ),
-    h('div', { class: 'rh-foot-note', text: `R HUD v${MOD_VERSION} · MIT License · 非官方玩家自制工具` }),
+    h('div', { class: 'rh-foot-note', text: `R HUD v${MOD_VERSION} · GPL-3.0-or-later · 非官方玩家自制工具` }),
   );
 
   const grip = h('div', { class: 'rh-grip', id: 'rh-grip', title: '拖动调整宽度' });

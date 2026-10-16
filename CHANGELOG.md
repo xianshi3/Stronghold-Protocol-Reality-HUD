@@ -2,6 +2,13 @@
 
 All notable changes to this project. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **许可变更**：MIT → **GPL-3.0-or-later**（与所附加的游戏一致）；`LICENSE`、README、`package.json` / `mod.json` 与界面上的许可文案同步更新。
+- **README 重写**：移除博客链接行，新增贡献者展示（[@Kriss-wq](https://github.com/Kriss-wq) 的实时伤害统计窗口，PR #3）；`package.json` / `mod.json` 的 `homepage` 指向仓库地址。
+
 ## [1.5.1] - 2026-10-15
 
 ### Fixed
@@ -14,8 +21,6 @@ All notable changes to this project. Format based on [Keep a Changelog](https://
 
 - 新增独立「干员伤害统计」窗口：实时显示本回合 / 全局伤害、伤害类型、增益减益类型与持续时间。
 - 兼容 `m.unitStats`、`m.field`、`b.start`、`b.ev`、`b.result`、`m.result` 等新旧战斗帧；旧协议没有来源 id 时显示未归属伤害。
-
-## [Unreleased]
 
 ## [1.4.2] - 2026-10-15
 

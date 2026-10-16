@@ -11,8 +11,8 @@
     "卫戍协议"
   ],
   "author": "Reality",
-  "license": "MIT",
-  "homepage": "https://reality-blog.asia",
+  "license": "GPL-3.0-or-later",
+  "homepage": "https://github.com/xianshi3/Stronghold-Protocol-Reality-HUD",
   "repository": {
     "type": "git",
     "url": "https://github.com/xianshi3/Stronghold-Protocol-Reality-HUD.git"

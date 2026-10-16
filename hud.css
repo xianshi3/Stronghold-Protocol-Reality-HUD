@@ -1,5 +1,5 @@
 /* Reality HUD — styles. Loaded by the mod loader, everything scoped under .rh-root.
- * Author: Reality · @xianshi3 · https://reality-blog.asia · MIT
+ * Author: Reality · @xianshi3 · https://reality-blog.asia · GPL-3.0-or-later
  *
  * Colours reuse the game's theme palette (public/css/theme.css) with --rh-* fallbacks, so the
  * overlay still reads correctly if the theme changes.
