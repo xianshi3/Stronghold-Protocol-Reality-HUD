@@ -561,6 +561,7 @@
 .rh-damage-window {
   position: fixed;
   z-index: 2147482999;
+  --rh-damage-scale: 1;
   width: var(--rh-damage-w, 620px);
   max-width: calc(100vw - 16px);
   color: var(--text-md, #c3cbc7);
@@ -569,11 +570,28 @@
   border-radius: 10px;
   box-shadow: 0 10px 34px rgba(0, 0, 0, 0.58);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  container-type: inline-size;
   font: 400 11px/1.4 var(--rh-font, system-ui, -apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif);
   contain: layout style;
 }
 
 .rh-damage-window.is-dragging { cursor: grabbing; opacity: 1; }
+.rh-damage-window.is-resizing { cursor: nwse-resize; opacity: 1; }
+.rh-damage-body { min-width: 0; min-height: 0; flex: 1 1 auto; }
+.rh-damage-sec { min-width: 0; }
+.rh-damage-grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(135deg, transparent 45%, rgba(78, 216, 175, 0.38) 46%, rgba(78, 216, 175, 0.38) 52%, transparent 53%);
+}
 .rh-damage-head {
   display: flex;
   align-items: center;
@@ -589,10 +607,20 @@
 .rh-damage-title { font: 600 11px/1 var(--rh-mono, ui-monospace, monospace); color: var(--text-hi, #f2f2f2); letter-spacing: 0.08em; white-space: nowrap; }
 .rh-damage-round { color: var(--text-dim, #5d6863); font: 500 10px/1 var(--rh-mono, ui-monospace, monospace); }
 .rh-damage-summary { padding: 7px 10px; color: var(--rh-ok, #4ed8af); background: rgba(78, 216, 175, 0.04); border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
-.rh-damage-table { max-height: min(52vh, 500px); overflow: auto; overscroll-behavior: contain; }
-.rh-damage-row { display: grid; grid-template-columns: minmax(105px, 1.15fr) 62px 62px minmax(125px, 1.1fr) minmax(180px, 1.8fr); gap: 7px; align-items: center; min-height: 30px; padding: 4px 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.045); background: var(--rh-bg-solid, #0f1312); }
+.rh-damage-players { border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+.rh-damage-player-row { display: grid; grid-template-columns: var(--rh-player-col-name, minmax(0, 1.3fr)) var(--rh-player-col-current, minmax(52px, .72fr)) var(--rh-player-col-total, minmax(58px, .78fr)) var(--rh-player-col-types, minmax(0, 1fr)); gap: 7px; align-items: center; min-height: 27px; padding: 4px 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.045); background: rgba(78, 216, 175, 0.045); }
+.rh-damage-player-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rh-damage-player-row > span + span { border-left: 1px solid rgba(78, 216, 175, 0.12); padding-left: 7px; }
+.rh-damage-player-row.is-active { background: rgba(78, 216, 175, 0.09); }
+.rh-damage-player-head { min-height: 23px; color: var(--text-dim, #5d6863); background: rgba(255, 255, 255, 0.025); font-size: 9.5px; letter-spacing: 0.05em; }
+.rh-damage-player-name { color: var(--text-hi, #f2f2f2); font-weight: 600; }
+.rh-damage-table { min-width: 0; }
+.rh-damage-row { display: grid; grid-template-columns: var(--rh-damage-col-name, minmax(0, 1.15fr)) var(--rh-damage-col-current, minmax(52px, .65fr)) var(--rh-damage-col-total, minmax(52px, .65fr)) var(--rh-damage-col-types, minmax(0, 1.1fr)) var(--rh-damage-col-effects, minmax(0, 1.8fr)); gap: 0; align-items: stretch; min-height: 30px; padding: 0 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.045); background: var(--rh-bg-solid, #0f1312); }
 .rh-damage-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rh-damage-row > span + span { border-left: 1px solid rgba(78, 216, 175, 0.12); padding-left: 7px; }
 .rh-damage-head-row { min-height: 24px; color: var(--text-dim, #5d6863); background: rgba(255, 255, 255, 0.035); font-size: 9.5px; letter-spacing: 0.05em; }
+.rh-damage-col-head { position: relative; display: flex; align-items: center; min-height: 24px; cursor: default; user-select: none; }
+.rh-damage-col-head::after { content: ''; position: absolute; top: 3px; right: -7px; bottom: 3px; width: 14px; cursor: col-resize; border-right: 1px solid rgba(78, 216, 175, 0.34); opacity: 0.8; }
 .rh-damage-row.is-active { background: rgba(78, 216, 175, 0.08); }
 .rh-damage-row.is-unattributed { color: var(--text-dim, #5d6863); }
 .rh-damage-name { color: var(--text-hi, #f2f2f2); font-weight: 600; }
@@ -604,15 +632,74 @@
 .rh-damage-team-title { color: var(--text-lo, #8a948f); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; }
 .rh-damage-team-list { margin-top: 2px; color: var(--rh-ok, #4ed8af); font-size: 10px; }
 .rh-damage-foot { padding: 5px 10px 6px; color: var(--text-dim, #5d6863); font-size: 9px; border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.rh-damage-row .rh-damage-name,
+.rh-damage-row .rh-damage-types,
+.rh-damage-row .rh-damage-effects { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; align-self: stretch; display: flex; align-items: center; }
+.rh-damage-sec.is-folded > .rh-damage-players,
+.rh-damage-sec.is-folded > .rh-damage-table { display: none; }
+.rh-damage-sec .rh-sec-head { padding-top: 5px; padding-bottom: 5px; }
 .rh-damage-window.is-collapsed > :not(.rh-damage-head) { display: none; }
 .rh-damage-window.is-collapsed .rh-damage-head { border-bottom: none; border-radius: 10px; }
-.rh-damage-window.is-collapsed .rh-damage-title { font-size: 10px; }
+.rh-damage-window.is-collapsed {
+  width: 116px !important;
+  min-width: 116px;
+  max-width: 116px;
+  height: 34px !important;
+  min-height: 34px;
+  border-radius: 8px;
+}
+.rh-damage-window.is-collapsed .rh-damage-head {
+  width: 116px;
+  height: 34px;
+  box-sizing: border-box;
+  justify-content: flex-start;
+  gap: 5px;
+  padding: 0 7px;
+}
+.rh-damage-window.is-collapsed .rh-damage-title { display: block; font-size: 9px; letter-spacing: 0.04em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rh-damage-window.is-collapsed .rh-damage-round,
+.rh-damage-window.is-collapsed .rh-ibtn--x,
+.rh-damage-window.is-collapsed .rh-damage-grip { display: none; }
+.rh-damage-window.is-collapsed .rh-head-actions { margin: 0; }
+.rh-damage-window.is-collapsed #rh-damage-fold { display: block; width: 20px; height: 20px; padding: 0; }
 
 @media (max-width: 760px) {
-  .rh-damage-window { width: min(620px, calc(100vw - 16px)); }
-  .rh-damage-row { grid-template-columns: minmax(90px, 1.05fr) 48px 48px minmax(100px, 1.2fr); }
+  .rh-damage-window { width: min(var(--rh-damage-w, 620px), calc(100vw - 16px)); }
+  .rh-damage-player-row { grid-template-columns: var(--rh-player-col-name, minmax(90px, 1fr)) var(--rh-player-col-current, 55px) var(--rh-player-col-total, 65px) var(--rh-player-col-types, minmax(90px, 1fr)); }
+  .rh-damage-row { grid-template-columns: var(--rh-damage-col-name, minmax(90px, 1.05fr)) var(--rh-damage-col-current, 48px) var(--rh-damage-col-total, 48px) var(--rh-damage-col-types, minmax(100px, 1.2fr)); }
   .rh-damage-effects { grid-column: 1 / -1; padding-left: 0; white-space: normal; }
 }
+
+/* Reflow from the panel's width while it is being resized. This keeps the page and the panel
+   free of a horizontal scrollbar on desktop viewports as well as on phones. */
+@container (max-width: 520px) {
+  .rh-damage-player-row { grid-template-columns: var(--rh-player-col-name, minmax(0, 1fr)) var(--rh-player-col-current, 52px) var(--rh-player-col-total, 58px) var(--rh-player-col-types, minmax(0, 1fr)); }
+  .rh-damage-row { grid-template-columns: var(--rh-damage-col-name, minmax(0, 1fr)) var(--rh-damage-col-current, 50px) var(--rh-damage-col-total, 50px) var(--rh-damage-col-types, minmax(0, 1fr)) var(--rh-damage-col-effects, minmax(0, 1fr)); }
+  .rh-damage-row .rh-damage-effects { grid-column: 1 / -1; padding-left: 0; white-space: normal; }
+}
+
+@container (max-width: 400px) {
+  .rh-damage-player-row { grid-template-columns: var(--rh-player-col-name, minmax(0, 1fr)) var(--rh-player-col-current, 48px) var(--rh-player-col-total, 52px); }
+  .rh-damage-player-row .rh-damage-types { grid-column: 1 / -1; white-space: normal; }
+  .rh-damage-row { grid-template-columns: var(--rh-damage-col-name, minmax(0, 1fr)) var(--rh-damage-col-current, 46px) var(--rh-damage-col-total, 46px); }
+  .rh-damage-row .rh-damage-types { grid-column: 1 / -1; white-space: normal; }
+}
+
+/* The damage panel has its own scale so the main HUD layout remains compact. */
+.rh-damage-window .rh-damage-title { font-size: calc(11px * var(--rh-damage-scale)); }
+.rh-damage-window .rh-damage-round { font-size: calc(10px * var(--rh-damage-scale)); }
+.rh-damage-window .rh-damage-summary { font-size: calc(11px * var(--rh-damage-scale)); }
+.rh-damage-window .rh-damage-player-head,
+.rh-damage-window .rh-damage-head-row { font-size: calc(9.5px * var(--rh-damage-scale)); }
+.rh-damage-window .rh-damage-player-row,
+.rh-damage-window .rh-damage-row { font-size: calc(10.5px * var(--rh-damage-scale)); }
+.rh-damage-window .rh-damage-num { font-size: calc(11px * var(--rh-damage-scale)); }
+.rh-damage-window .rh-damage-types,
+.rh-damage-window .rh-damage-effects,
+.rh-damage-window .rh-damage-team-list { font-size: calc(10px * var(--rh-damage-scale)); }
+.rh-damage-window .rh-damage-team-title { font-size: calc(9.5px * var(--rh-damage-scale)); }
+.rh-damage-window .rh-damage-foot,
+.rh-damage-window .rh-damage-empty { font-size: calc(9px * var(--rh-damage-scale)); }
 
 
 /* ---------------------------------------------------------------- settings */

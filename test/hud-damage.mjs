@@ -30,9 +30,9 @@ const page = await browser.newPage();
 await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
 await page.waitForSelector("#rh-damage-window");
 const emit = (msg) => page.evaluate((m) => { for (const fn of (globalThis.__SP__.net._listeners.get("*") || [])) fn(m); }, msg);
-await emit({ t: "m.public", round: 1, phase: "COMBAT", lastRound: 14 });
+await emit({ t: "m.public", round: 1, phase: "COMBAT", lastRound: 14, players: [{ playerId: "p1", name: "玩家一" }] });
 await emit({ t: "m.field", units: [
-  { id: "op_1", uid: "u1", name: "测试干员", kind: "op", side: "ally" },
+  { id: "op_1", uid: "u1", name: "测试干员", kind: "op", side: "ally", ownerId: "p1" },
   { id: "enemy_1", name: "敌人", kind: "enemy", side: "enemy" },
 ] });
 await emit({ t: "b.ev", ev: [
@@ -50,6 +50,7 @@ const first = await page.evaluate(() => ({
 if (!first.rows.some((r) => /测试干员/.test(r) && /125/.test(r) && /物理/.test(r))) throw new Error(`damage row missing: ${JSON.stringify(first)}`);
 if (first.rows.some((r) => /敌人/.test(r))) throw new Error(`enemy was rendered as operator: ${JSON.stringify(first.rows)}`);
 if (!/护盾/.test(first.text) || !/增益/.test(first.text)) throw new Error(`effect missing: ${first.text}`);
+if (!first.text.includes("玩家一") || !first.text.includes("125")) throw new Error(`player damage missing: ${first.text}`);
 await emit({ t: "m.public", round: 2, phase: "ROUND_START", lastRound: 14 });
 await new Promise((r) => setTimeout(r, 80));
 const second = await page.evaluate(() => [...document.querySelectorAll("#rh-damage-table .rh-damage-row")].map((r) => r.textContent));

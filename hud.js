@@ -80,7 +80,17 @@ const DEFAULTS = {
     x: null,
     y: null,
     width: 620,
+    height: null,
+    fontScale: 1,
+    playersCollapsed: false,
+    operatorsCollapsed: false,
+    columnWidths: {},
     collapsed: false,
+    windows: {
+      operators: { x: null, y: null, width: 620, height: null, collapsed: false, visible: true, columnWidths: {} },
+      players: { x: null, y: null, width: 420, height: null, collapsed: false, visible: true, columnWidths: {} },
+      enemies: { x: null, y: null, width: 480, height: null, collapsed: false, visible: true, columnWidths: {} },
+    },
   },
   folded: {},             // sectionId -> bool, per-section fold state
   logFilter: 'all',       // all | warn | state
@@ -99,17 +109,33 @@ const PRESETS = {
 };
 
 function loadConfig() {
-  const base = { ...DEFAULTS, show: { ...DEFAULTS.show }, damageWindow: { ...DEFAULTS.damageWindow }, folded: {} };
+  const base = { ...DEFAULTS, show: { ...DEFAULTS.show }, damageWindow: { ...DEFAULTS.damageWindow, windows: { ...DEFAULTS.damageWindow.windows } }, folded: {} };
   try {
     const raw = globalThis.localStorage?.getItem(STORAGE_KEY);
     if (!raw) return base;
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return base;
+    const savedDamage = parsed.damageWindow && typeof parsed.damageWindow === 'object' ? parsed.damageWindow : {};
+    const windows = Object.fromEntries(Object.entries(base.damageWindow.windows).map(([id, defaults]) => [id, { ...defaults, ...(savedDamage.windows?.[id] || {}) }]));
+    if (!savedDamage.windows) {
+      windows.operators = { ...windows.operators,
+        x: savedDamage.x ?? windows.operators.x,
+        y: savedDamage.y ?? windows.operators.y,
+        width: savedDamage.width ?? windows.operators.width,
+        height: savedDamage.height ?? windows.operators.height,
+        collapsed: savedDamage.collapsed ?? windows.operators.collapsed,
+        columnWidths: savedDamage.columnWidths ?? windows.operators.columnWidths,
+      };
+    }
     return {
       ...base,
       ...parsed,
       show: { ...base.show, ...(parsed.show || {}) },
-      damageWindow: { ...base.damageWindow, ...(parsed.damageWindow || {}) },
+      damageWindow: {
+        ...base.damageWindow,
+        ...savedDamage,
+        windows,
+      },
       folded: { ...(parsed.folded || {}) },
       logExpanded: Array.isArray(parsed.logExpanded) ? parsed.logExpanded.slice(-40) : [],
     };
@@ -248,9 +274,16 @@ const state = {
     round: null,
     battleId: null,
     units: new Map(),
+    players: new Map(),
+    enemies: new Map(),
     teamEffects: new Map(),
     unattributed: { current: 0, total: 0, currentTypes: {}, totalTypes: {} },
-    attackSources: new Map(), // target id -> { source id, at }
+    attackSources: new Map(), // target id -> [{ source id, at }] (legacy frames without source ids)
+    seenFrames: new Map(), // frame identity -> timestamp; drops duplicate net/runner delivery
+    collecting: false,
+    paused: false,
+    finished: false,
+    phase: null,
     lastFrameAt: 0,
   },
 
@@ -258,6 +291,11 @@ const state = {
   mounted: false,
   _netAttached: false,
   _storeAttached: false,
+  _netRetry: null,
+  _runnerAttached: false,
+  _runnerRetry: null,
+  _dataAttached: false,
+  _dataRetry: null,
   _wasInMatch: false,
   _frames: 0,
   _acc: 0,
@@ -329,6 +367,20 @@ const DAMAGE_TYPE_TEXT = Object.freeze({
 const NEGATIVE_EFFECT_WORDS = /stun|freeze|cold|sleep|bind|silence|fear|root|slow|fragile|vuln|debuff|减益|眩晕|冻结|寒冷|睡眠|束缚|沉默|恐惧|禁锢|减速|脆弱/i;
 const POSITIVE_EFFECT_WORDS = /skill|shield|stealth|camou|haste|atk|def|aspd|heal|buff|增益|护盾|隐匿|迷彩|加速|攻击|防御|技力/i;
 
+// Combat frames often carry an internal effect key (for example `sluggish` or
+// `allybuff_select_2`) instead of the localized data record. Resolve the data
+// table first, then use this small fallback dictionary for generic status keys.
+const DAMAGE_EFFECT_NAMES = Object.freeze({
+  skill: '技能', shield: '护盾', sluggish: '迟缓', stun: '眩晕', freeze: '冻结', cold: '寒冷',
+  sleep: '睡眠', silence: '沉默', fear: '恐惧', root: '束缚', bind: '束缚', slow: '减速',
+  fragile: '脆弱', artsfragile: '法术脆弱', vuln: '易伤', stealth: '隐匿', camouflage: '迷彩', camou: '迷彩',
+  reveal: '显形', haste: '加速', atk: '攻击力提升', atkup: '攻击力提升', def: '防御力提升', defup: '防御力提升',
+  aspd: '攻击速度提升', attackspeed: '攻击速度提升', heal: '治疗', buff: '增益', debuff: '减益',
+  burngauge: '灼燃损伤', burn: '灼燃损伤', necrosis: '凋亡损伤', neural: '神经损伤', erosion: '侵蚀损伤',
+  noheal: '禁疗', healfree: '禁疗', isolated: '孤立', unblockable: '无法阻挡', untargetable: '无法选中',
+  invuln: '无敌', invulnerable: '无敌', blocked: '阻挡', marked: '标记', selfbound: '自缚',
+});
+
 function finiteNumber(...values) {
   for (const v of values) {
     const n = Number(v);
@@ -385,11 +437,98 @@ function ensureDamageUnit(raw, defaults = {}) {
   if (merged.uid != null) rec.uid = String(merged.uid);
   if (merged.defId != null) rec.defId = String(merged.defId);
   if (merged.name != null && String(merged.name).trim()) rec.name = String(merged.name);
+  if (merged.skillIndex != null && Number.isFinite(Number(merged.skillIndex))) rec.skillIndex = Number(merged.skillIndex);
   if (merged.kind != null) rec.kind = String(merged.kind);
   if (merged.side != null) rec.side = String(merged.side);
-  if (merged.ownerId != null) rec.ownerId = String(merged.ownerId);
+  const ownerId = merged.ownerId ?? merged.ownerPlayerId ?? merged.playerId
+    ?? (merged.owner && typeof merged.owner === 'object' ? merged.owner.playerId : null);
+  if (ownerId != null) rec.ownerId = String(ownerId);
+  if (rec.ownerId) ensureDamagePlayer({ playerId: rec.ownerId, name: merged.ownerName });
+  const resolvedName = damageDataName(rec);
+  if (resolvedName) rec.name = resolvedName;
   if (rec.name == null) rec.name = rec.id || rec.defId || key;
   return rec;
+}
+
+function damageDataName(rec) {
+  const data = globalThis.__SP__?.data;
+  if (!data || typeof data.lookup !== 'function' || !rec) return null;
+  const ids = [rec.defId, rec.id, rec.name, rec.key].filter((id, i, all) => id && all.indexOf(id) === i);
+  const variants = [];
+  for (const id of ids) {
+    variants.push(String(id));
+    if (/_b$/.test(String(id))) variants.push(String(id).replace(/_b$/, '_a'));
+  }
+  for (const id of variants) {
+    const def = data.lookup('chess', id);
+    const name = def?.name ?? def?.charName ?? def?.chessName;
+    if (typeof name === 'string' && name.trim() && !/^chess_/.test(name)) return name.trim();
+  }
+  return null;
+}
+
+function damageSkillName(rec, raw = {}) {
+  const data = globalThis.__SP__?.data;
+  if (!data || typeof data.lookup !== 'function' || !rec) return null;
+  const ids = [rec.defId, rec.id, rec.name, rec.key].filter((id, i, all) => id && all.indexOf(id) === i);
+  const index = finiteNumber(raw.skillIndex, rec.skillIndex);
+  for (const id of ids) {
+    const def = data.lookup('chess', String(id));
+    const skills = Array.isArray(def?.skills) ? def.skills : [];
+    const skill = skills.find((item) => index != null && Number(item?.index) === index) || def?.skill;
+    const name = skill?.name ?? skill?.skillName;
+    if (typeof name === 'string' && name.trim()) return name.trim();
+  }
+  return null;
+}
+
+function enemyDataName(rec) {
+  const data = globalThis.__SP__?.data;
+  if (!data || typeof data.lookup !== 'function' || !rec) return null;
+  const ids = [rec.defId, rec.name, rec.id, rec.key].filter((id, i, all) => id && all.indexOf(id) === i);
+  for (const id of ids) {
+    const def = data.lookup('enemies', String(id));
+    const name = def?.name ?? def?.enemyName ?? def?.displayName;
+    if (typeof name === 'string' && name.trim() && !/^enemy_/.test(name)) return name.trim();
+  }
+  return null;
+}
+
+function refreshDamageNames() {
+  let changed = false;
+  for (const rec of state.damage.units.values()) {
+    const name = damageDataName(rec);
+    if (name && rec.name !== name) { rec.name = name; changed = true; }
+    for (const effect of rec.effects.values()) {
+      const label = effect.key === 'skill' ? (damageSkillName(rec, effect) || damageEffectName(effect.key, effect)) : damageEffectName(effect.key, effect);
+      if (label && effect.label !== label) { effect.label = label; changed = true; }
+    }
+  }
+  for (const rec of state.damage.enemies.values()) {
+    const name = enemyDataName(rec);
+    if (name && rec.name !== name) { rec.name = name; changed = true; }
+  }
+  for (const effect of state.damage.teamEffects.values()) {
+    const label = damageEffectName(effect.key, effect);
+    if (label && effect.label !== label) { effect.label = label; changed = true; }
+  }
+  if (changed) scheduleRender('damage');
+}
+
+function damageEffectName(key, raw = {}) {
+  const explicit = String(raw.name ?? raw.label ?? raw.title ?? '').trim();
+  // Keep actual localized text, but do not expose technical variable names.
+  if (explicit && !/^[a-z][a-z0-9_.:-]*$/i.test(explicit)) return explicit;
+  const token = String(key ?? '').trim();
+  const data = globalThis.__SP__?.data;
+  const record = data?.lookup?.('effects', token);
+  if (record?.name && String(record.name).trim()) return String(record.name).trim();
+  const lower = token.toLowerCase();
+  if (DAMAGE_EFFECT_NAMES[lower]) return DAMAGE_EFFECT_NAMES[lower];
+  const short = lower.replace(/^(?:status|effect|buff|debuff|enemybuff|enemydebuff|allybuff|allydebuff)[_:.-]*/, '');
+  if (DAMAGE_EFFECT_NAMES[short]) return DAMAGE_EFFECT_NAMES[short];
+  const suffix = short.split(/[:_.-]/).reverse().find((part) => DAMAGE_EFFECT_NAMES[part]);
+  return (suffix && DAMAGE_EFFECT_NAMES[suffix]) || token || '状态';
 }
 
 function damageEffectType(key, raw = {}) {
@@ -404,7 +543,7 @@ function damageEffectType(key, raw = {}) {
 function effectDurationMs(raw, nowMs = now()) {
   const duration = finiteNumber(raw?.durationMs, raw?.duration_ms);
   if (duration != null) return duration >= 1000 ? duration : duration * 1000;
-  const seconds = finiteNumber(raw?.seconds, raw?.durationSec, raw?.durationSeconds);
+  const seconds = finiteNumber(raw?.seconds, raw?.duration, raw?.durationSec, raw?.durationSeconds);
   if (seconds != null) return Math.max(0, seconds * 1000);
   const until = finiteNumber(raw?.untilMs, raw?.expiresAt, raw?.expireAt);
   if (until != null && until > nowMs - 86400000) return Math.max(0, until - nowMs);
@@ -413,6 +552,7 @@ function effectDurationMs(raw, nowMs = now()) {
 
 function effectText(effect) {
   if (!effect) return '—';
+  if (state.damage.paused) return `${effect.label} ${effect.type} 0秒`;
   const age = Math.max(0, now() - effect.startedAt);
   let duration;
   if (effect.active && Number.isFinite(effect.expiresAt)) {
@@ -430,10 +570,10 @@ function ensureDamageEffect(rec, rawKey, raw = {}, active = true) {
   const at = now();
   let effect = rec.effects.get(key);
   if (!effect) {
-    effect = { key, label: String(raw.name ?? raw.label ?? key), type: damageEffectType(key, raw), startedAt: at, endedAt: at, expiresAt: null, active: false };
+    effect = { key, label: damageEffectName(key, raw), type: damageEffectType(key, raw), startedAt: at, endedAt: at, expiresAt: null, active: false };
     rec.effects.set(key, effect);
   }
-  effect.label = String(raw.name ?? raw.label ?? effect.label ?? key);
+  effect.label = damageEffectName(key, raw);
   effect.type = damageEffectType(key, raw);
   if (active) {
     if (!effect.active) effect.startedAt = at;
@@ -460,22 +600,116 @@ function resetDamageRound(round) {
     rec.current = 0;
     rec.currentTypes = emptyDamageTypes();
     rec.reported = Object.create(null);
-    for (const effect of rec.effects.values()) {
-      if (effect.active && Number.isFinite(effect.expiresAt) && effect.expiresAt <= now()) effect.active = false;
-    }
+    rec.effects.clear();
   }
   state.damage.unattributed.current = 0;
   state.damage.unattributed.currentTypes = emptyDamageTypes();
+  state.damage.teamEffects.clear();
+  for (const enemy of state.damage.enemies.values()) {
+    enemy.current = 0;
+    enemy.currentTypes = emptyDamageTypes();
+    for (const target of enemy.targets.values()) {
+      target.current = 0;
+      target.currentTypes = emptyDamageTypes();
+    }
+  }
+  for (const player of state.damage.players.values()) {
+    player.current = 0;
+    player.currentTypes = emptyDamageTypes();
+    player.reported = Object.create(null);
+  }
 }
 
 function resetDamageSession() {
   state.damage.round = null;
   state.damage.battleId = null;
   state.damage.units.clear();
+  state.damage.enemies.clear();
+  state.damage.players.clear();
   state.damage.teamEffects.clear();
   state.damage.attackSources.clear();
+  state.damage.seenFrames.clear();
+  state.damage.collecting = false;
+  state.damage.paused = false;
+  state.damage.finished = false;
+  state.damage.phase = null;
   state.damage.unattributed = { current: 0, total: 0, currentTypes: emptyDamageTypes(), totalTypes: emptyDamageTypes() };
   scheduleRender('damage');
+}
+
+const DAMAGE_BATTLE_PHASES = new Set(['COMBAT', 'UNITE', 'FINAL_ASSAULT', 'HIDDEN_CORE']);
+
+function setDamageLifecycle({ active = false, paused = false, phase = null } = {}) {
+  const running = !!active;
+  const wasRunning = state.damage.collecting;
+  state.damage.collecting = running && !paused;
+  state.damage.paused = running && !!paused;
+  state.damage.finished = !running && !paused;
+  if (phase != null) state.damage.phase = phase;
+  if (!running && !paused && wasRunning) {
+    for (const rec of state.damage.units.values()) rec.effects.clear();
+    state.damage.teamEffects.clear();
+    state.damage.attackSources.clear();
+  }
+  scheduleRender('damage');
+}
+
+function startDamageBattle(battleId = null) {
+  if (battleId != null) state.damage.battleId = String(battleId);
+  state.damage.collecting = true;
+  state.damage.paused = false;
+  state.damage.finished = false;
+  scheduleRender('damage');
+}
+
+function ensureDamagePlayer(raw, defaults = {}) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const id = String(source.playerId ?? source.id ?? defaults.playerId ?? defaults.id ?? '');
+  if (!id) return null;
+  let player = state.damage.players.get(id);
+  if (!player) {
+    player = { id, name: id, current: 0, total: 0, currentTypes: emptyDamageTypes(), totalTypes: emptyDamageTypes(), reported: Object.create(null) };
+    state.damage.players.set(id, player);
+  }
+  const name = source.name ?? defaults.name;
+  if (name != null && String(name).trim()) player.name = String(name);
+  return player;
+}
+
+function updateDamagePlayers(rawPlayers, allowStopped = false, snapshotKey = null) {
+  if (!Array.isArray(rawPlayers)) return;
+  for (const raw of rawPlayers) {
+    if (!raw || typeof raw !== 'object') continue;
+    const player = ensureDamagePlayer(raw);
+    if (!player) continue;
+    if ((!state.damage.collecting && !allowStopped) || state.damage.paused) continue;
+    const stats = raw.stats && typeof raw.stats === 'object' ? raw.stats : raw;
+    const reported = finiteNumber(stats.damage, stats.dmg, stats.damageDealt, stats.dealt);
+    if (reported == null || reported < 0) continue;
+    const key = `player:${snapshotKey ?? state.damage.battleId ?? 'round'}:${state.damage.round ?? 'match'}`;
+    const prev = player.reported[key] ?? 0;
+    if (reported >= prev) {
+      const before = player.current;
+      if (player.current < reported) {
+        player.current = reported;
+        player.total += Math.max(0, reported - before);
+      }
+      player.reported[key] = reported;
+    }
+  }
+  scheduleRender('damage');
+}
+
+function recordPlayerDamage(ownerId, amount, type) {
+  const player = ensureDamagePlayer({ playerId: ownerId });
+  if (!player) return;
+  const n = Number(amount);
+  if (!Number.isFinite(n) || n <= 0) return;
+  const key = normalizeDamageType(type);
+  player.current += n;
+  player.total += n;
+  player.currentTypes[key] = (player.currentTypes[key] || 0) + n;
+  player.totalTypes[key] = (player.totalTypes[key] || 0) + n;
 }
 
 function addDamageToBucket(bucket, amount, type) {
@@ -489,9 +723,68 @@ function addDamageToBucket(bucket, amount, type) {
   return true;
 }
 
-function recordDamage(source, amount, type) {
+function ensureDamageEnemy(source) {
+  const key = String(source?.defId ?? source?.name ?? source?.id ?? 'unknown-enemy');
+  let enemy = state.damage.enemies.get(key);
+  if (!enemy) {
+    enemy = {
+      key,
+      id: source?.id != null ? String(source.id) : null,
+      defId: source?.defId != null ? String(source.defId) : key,
+      name: source?.name || key,
+      current: 0,
+      total: 0,
+      currentTypes: emptyDamageTypes(),
+      totalTypes: emptyDamageTypes(),
+      targets: new Map(),
+    };
+    state.damage.enemies.set(key, enemy);
+  }
+  if (source?.name && !/^enemy_/.test(String(source.name))) enemy.name = String(source.name);
+  const resolvedName = enemyDataName(enemy);
+  if (resolvedName) enemy.name = resolvedName;
+  return enemy;
+}
+
+function recordEnemyDamage(source, target, amount, type) {
+  const enemy = ensureDamageEnemy(source);
   const n = Number(amount);
   if (!Number.isFinite(n) || n <= 0) return;
+  const key = normalizeDamageType(type);
+  enemy.current += n;
+  enemy.total += n;
+  enemy.currentTypes[key] = (enemy.currentTypes[key] || 0) + n;
+  enemy.totalTypes[key] = (enemy.totalTypes[key] || 0) + n;
+  if (target) {
+    const targetKey = target.key || target.uid || target.id || 'unknown-target';
+    let detail = enemy.targets.get(String(targetKey));
+    if (!detail) {
+      detail = { key: String(targetKey), name: target.name || target.id || String(targetKey), current: 0, total: 0, currentTypes: emptyDamageTypes(), totalTypes: emptyDamageTypes() };
+      enemy.targets.set(String(targetKey), detail);
+    }
+    detail.current += n;
+    detail.total += n;
+    detail.currentTypes[key] = (detail.currentTypes[key] || 0) + n;
+    detail.totalTypes[key] = (detail.totalTypes[key] || 0) + n;
+  }
+}
+
+function recordDamage(source, amount, type, targetId = null) {
+  const n = Number(amount);
+  if (!Number.isFinite(n) || n <= 0) return;
+  const target = unitFromId(targetId);
+  if (source && source.side === 'enemy') {
+    if (target && target.side === 'ally') {
+      recordEnemyDamage(source, target, n, type);
+      scheduleRender('damage');
+    }
+    return;
+  }
+  // The operator window only accepts damage dealt to an enemy. This prevents
+  // enemy hits and friendly-fire/reflect damage from leaking into its
+  // unattributed row while still preserving unknown ally hits on enemies.
+  if (source && source.side === 'ally' && target && target.side !== 'enemy') return;
+  if (!source && target && target.side !== 'enemy') return;
   const rec = source && isOperatorRecord(source) ? source : null;
   if (rec) {
     const key = normalizeDamageType(type);
@@ -499,16 +792,19 @@ function recordDamage(source, amount, type) {
     rec.total += n;
     rec.currentTypes[key] = (rec.currentTypes[key] || 0) + n;
     rec.totalTypes[key] = (rec.totalTypes[key] || 0) + n;
+    recordPlayerDamage(rec.ownerId, n, key);
   } else addDamageToBucket(state.damage.unattributed, n, type);
   scheduleRender('damage');
 }
 
-function mergeReportedDamage(raw, rec, sourceKey = 'stats') {
+function mergeReportedDamage(raw, rec, sourceKey = 'stats', snapshotKey = null, allowStopped = false) {
   if (!rec || !raw || typeof raw !== 'object') return;
+  if ((!state.damage.collecting && !allowStopped) || state.damage.paused) return;
   const stats = raw.stats && typeof raw.stats === 'object' ? raw.stats : raw;
   const reported = finiteNumber(stats.damage, stats.dmg, stats.damageDealt, stats.dealt);
   if (reported != null && reported >= 0) {
-    const key = `${sourceKey}:${state.damage.round ?? 'match'}`;
+    const battleKey = snapshotKey ?? state.damage.battleId ?? 'round';
+    const key = `${sourceKey}:${battleKey}:${state.damage.round ?? 'match'}`;
     const prev = rec.reported[key] ?? 0;
     if (reported >= prev) {
       // Reported values are snapshots, while b.ev values are increments. Bring the displayed
@@ -534,12 +830,15 @@ function mergeReportedDamage(raw, rec, sourceKey = 'stats') {
   }
 }
 
-function updateDamageUnits(rawUnits, sourceKey = 'frame') {
+function updateDamageUnits(rawUnits, sourceKey = 'frame', owner = {}, snapshotKey = null, allowStopped = false) {
   if (!Array.isArray(rawUnits)) return;
   for (const raw of rawUnits) {
     if (!raw || typeof raw !== 'object') continue;
-    const rec = ensureDamageUnit(raw, sourceKey.startsWith('result') || sourceKey === 'unitStats' ? { kind: 'op', side: 'ally' } : {});
-    mergeReportedDamage(raw, rec, sourceKey);
+    const rec = ensureDamageUnit(raw, {
+      ...(sourceKey.startsWith('result') || sourceKey === 'unitStats' ? { kind: 'op', side: 'ally' } : {}),
+      ...(owner.playerId ? { ownerId: owner.playerId } : {}),
+    });
+    mergeReportedDamage(raw, rec, sourceKey, snapshotKey, allowStopped);
   }
   scheduleRender('damage');
 }
@@ -552,47 +851,100 @@ function unitFromId(id) {
 
 function registerAttack(sourceId, targetId) {
   if (sourceId == null || targetId == null) return;
-  state.damage.attackSources.set(String(targetId), { source: String(sourceId), at: now() });
+  // A target may have several projectiles in flight at once. Keep a short FIFO
+  // instead of replacing the previous attacker; the old single entry caused a
+  // later hit to be credited to whichever operator attacked last.
+  const source = unitFromId(sourceId);
+  const target = unitFromId(targetId);
+  const operatorAttack = isOperatorRecord(source) && (!target || target.side === 'enemy');
+  const enemyAttack = source?.side === 'enemy' && (!target || target.side === 'ally');
+  if (!operatorAttack && !enemyAttack) return;
+  const key = String(targetId);
+  const pending = state.damage.attackSources.get(key) || [];
+  pending.push({ source: String(sourceId), at: now() });
+  while (pending.length > 16) pending.shift();
+  state.damage.attackSources.set(key, pending);
+}
+
+function consumePendingAttack(targetId, sourceId) {
+  if (targetId == null || sourceId == null) return;
+  const key = String(targetId);
+  const pending = state.damage.attackSources.get(key);
+  if (!pending) return;
+  const source = String(sourceId);
+  const index = pending.findIndex((entry) => entry && entry.source === source);
+  if (index >= 0) pending.splice(index, 1);
+  if (pending.length) state.damage.attackSources.set(key, pending);
+  else state.damage.attackSources.delete(key);
 }
 
 function sourceForDamage(sourceId, targetId) {
   if (sourceId != null) {
+    // A modern damage tuple follows an older `atk` tuple in the same frame.
+    // Consume that matching fallback entry so a later legacy hit cannot reuse it.
+    consumePendingAttack(targetId, sourceId);
     const known = unitFromId(sourceId);
     if (!known) {
-      const target = unitFromId(targetId);
-      // A source that is missing from the metadata is most often an enemy when the target is an
-      // ally. Avoid counting that hit as operator damage; for a known enemy target, an unknown
-      // source is a useful forward-compatible assumption for old client frames.
-      if (target?.side === 'ally') return null;
+      // Without a field record we cannot prove that this source is one of our operators. Keep it
+      // unattributed instead of manufacturing an ally record that could turn enemy damage into a
+      // fake operator row.
+      return null;
     }
-    const direct = known || ensureDamageUnit({ id: sourceId, kind: 'op', side: 'ally' });
-    return isOperatorRecord(direct) ? direct : null;
+    // Preserve explicit enemy sources as well. `recordDamage` routes these to the
+    // enemy aggregation window; dropping them here incorrectly turns the hit into
+    // unattributed damage when the target is an allied operator or summon.
+    if (known.side === 'enemy') return known;
+    return isOperatorRecord(known) ? known : null;
   }
-  const pending = targetId == null ? null : state.damage.attackSources.get(String(targetId));
-  if (!pending || now() - pending.at > 8000) return null;
-  const rec = unitFromId(pending.source);
+  const key = targetId == null ? null : String(targetId);
+  const pending = key == null ? null : state.damage.attackSources.get(key);
+  if (!pending) return null;
+  const at = now();
+  while (pending.length && at - pending[0].at > 8000) pending.shift();
+  if (!pending.length) { state.damage.attackSources.delete(key); return null; }
+  const next = pending.shift();
+  if (pending.length) state.damage.attackSources.set(key, pending);
+  else state.damage.attackSources.delete(key);
+  const rec = unitFromId(next.source);
+  if (rec?.side === 'enemy') return rec;
   return isOperatorRecord(rec) ? rec : null;
 }
 
 function handleStatusEvent(unitId, key, active, raw = {}) {
-  const rec = unitFromId(unitId) || ensureDamageUnit({ id: unitId, kind: 'op', side: 'ally' });
+  // Status events can belong to enemies too. Only attach them after field metadata has identified
+  // the unit; manufacturing an ally record here would later credit enemy damage to a fake operator.
+  const rec = unitFromId(unitId);
   if (!rec) return;
-  ensureDamageEffect(rec, key, raw, active !== false);
+  const payload = String(key) === 'skill' ? { ...raw, name: damageSkillName(rec, raw) || raw.name || raw.label || '技能' } : raw;
+  ensureDamageEffect(rec, key, payload, active !== false);
   scheduleRender('damage');
 }
 
 function parseDamageEvent(event, frame = {}) {
   if (Array.isArray(event)) {
     const kind = String(event[0] ?? '').toLowerCase();
+    if (kind === 'spawn') {
+      // Enemy instances created after the initial m.field snapshot announce
+      // their complete UnitInfo in b.ev. Register it before later damage
+      // tuples in the same frame are resolved by source id.
+      const unit = event[1];
+      if (unit && typeof unit === 'object') ensureDamageUnit(unit);
+      return;
+    }
     if (kind === 'atk' || kind === 'attack') {
       if (event.length >= 3) registerAttack(event[1], event[2]);
       return;
     }
     if (kind === 'dmg' || kind === 'damage' || kind === 'hit') {
-      let sourceId = null, targetId, amount, type;
-      if (event.length >= 5) { sourceId = event[1]; targetId = event[2]; amount = event[3]; type = event[4]; }
-      else { targetId = event[1]; amount = event[2]; type = event[3]; }
-      recordDamage(sourceForDamage(sourceId, targetId), amount, type);
+      // Canonical sim tuples are [dmg, target, amount, type, mark]. Newer
+      // frames append the authoritative source id at index 5 so projectile
+      // arrival order can never swap two operators' damage.
+      const legacySourceFirst = event.length === 5 && Number.isFinite(Number(event[3])) && event[4] !== 'r';
+      const sourceId = event.length >= 6 ? event[5] : (legacySourceFirst ? event[1] : null);
+      const targetId = legacySourceFirst ? event[2] : event[1];
+      const amount = legacySourceFirst ? event[3] : event[2];
+      const type = legacySourceFirst ? event[4] : event[3];
+      recordDamage(sourceForDamage(sourceId, targetId), amount, type, targetId);
       return;
     }
     if (kind === 'status' || kind === 'buff' || kind === 'debuff' || kind === 'effect') {
@@ -606,11 +958,16 @@ function parseDamageEvent(event, frame = {}) {
   }
   if (!event || typeof event !== 'object') return;
   const kind = String(event.t ?? event.type ?? event.kind ?? '').toLowerCase();
+  if (kind === 'spawn') {
+    const unit = event.unit ?? event.data ?? event.payload;
+    if (unit && typeof unit === 'object') ensureDamageUnit(unit);
+    return;
+  }
   if (kind === 'atk' || kind === 'attack') { registerAttack(event.sourceId ?? event.source ?? event.src ?? event.attacker, event.targetId ?? event.target ?? event.tgt); return; }
   if (kind === 'dmg' || kind === 'damage' || kind === 'hit') {
     const targetId = event.targetId ?? event.target ?? event.tgt ?? event.to;
     const sourceId = event.sourceId ?? event.source ?? event.src ?? event.attacker ?? event.from;
-    recordDamage(sourceForDamage(sourceId, targetId), event.amount ?? event.damage ?? event.value ?? event.n, event.damageType ?? event.typeName ?? event.element ?? event.type);
+    recordDamage(sourceForDamage(sourceId, targetId), event.amount ?? event.damage ?? event.value ?? event.n, event.damageType ?? event.typeName ?? event.element ?? event.type, targetId);
     return;
   }
   if (kind === 'status' || kind === 'buff' || kind === 'debuff' || kind === 'effect') {
@@ -620,20 +977,41 @@ function parseDamageEvent(event, frame = {}) {
 
 function parseBattleEvents(msg) {
   const events = msg?.ev || msg?.events || msg?.event || msg?.data?.ev;
-  if (Array.isArray(events)) for (const event of events) parseDamageEvent(event, msg);
-  else if (events && typeof events === 'object') parseDamageEvent(events, msg);
+  if (Array.isArray(events)) {
+    if (!rememberDamageFrame(msg, events)) return;
+    for (const event of events) parseDamageEvent(event, msg);
+  } else if (events && typeof events === 'object') {
+    if (!rememberDamageFrame(msg, events)) return;
+    parseDamageEvent(events, msg);
+  }
   if (msg?.gt != null) state.damage.lastFrameAt = Number(msg.gt) || state.damage.lastFrameAt;
   scheduleRender('damage');
 }
 
+function rememberDamageFrame(msg, events) {
+  const battle = msg?.battleId ?? msg?.fieldId;
+  const gameTime = msg?.gt;
+  // Frames without an identity must remain processable; only deduplicate
+  // identifiable frames that can arrive through both net and runner paths.
+  if (battle == null || !Number.isFinite(Number(gameTime))) return true;
+  let payload;
+  try { payload = JSON.stringify(events); } catch { return true; }
+  const key = `${battle}:${gameTime}:${payload}`;
+  if (state.damage.seenFrames.has(key)) return false;
+  state.damage.seenFrames.set(key, now());
+  while (state.damage.seenFrames.size > 512) state.damage.seenFrames.delete(state.damage.seenFrames.keys().next().value);
+  return true;
+}
+
 function parseTeamEffects(rawEffects) {
   if (!Array.isArray(rawEffects)) return;
+  if (!state.damage.collecting || state.damage.paused) return;
   for (const raw of rawEffects) {
     if (!raw || typeof raw !== 'object') continue;
     const key = String(raw.id ?? raw.key ?? raw.name ?? 'effect');
     let effect = state.damage.teamEffects.get(key);
-    if (!effect) effect = { key, label: key, type: damageEffectType(key, raw), startedAt: now(), endedAt: now(), expiresAt: null, active: true };
-    effect.label = String(raw.name ?? raw.label ?? key);
+    if (!effect) effect = { key, label: damageEffectName(key, raw), type: damageEffectType(key, raw), startedAt: now(), endedAt: now(), expiresAt: null, active: true };
+    effect.label = damageEffectName(key, raw);
     effect.type = damageEffectType(key, raw);
     effect.active = raw.active !== false;
     const duration = effectDurationMs(raw, now());
@@ -646,23 +1024,32 @@ function parseTeamEffects(rawEffects) {
 
 function parseDamageFrame(msg) {
   if (!msg || typeof msg !== 'object') return;
+  if (msg.t === 'm.field' || msg.t === 'b.start') startDamageBattle(msg.battleId);
+  if (msg.phase) setDamageLifecycle({ active: DAMAGE_BATTLE_PHASES.has(msg.phase), paused: !!msg.paused, phase: msg.phase });
   if (msg.round != null) resetDamageRound(msg.round);
   if (msg.battleId != null) state.damage.battleId = String(msg.battleId);
-  if (Array.isArray(msg.units)) updateDamageUnits(msg.units, msg.t || 'frame');
+  if (Array.isArray(msg.units)) updateDamageUnits(msg.units, msg.t || 'frame', {}, msg.battleId);
+  if (!state.damage.collecting || state.damage.paused) return;
   if (Array.isArray(msg.effects)) parseTeamEffects(msg.effects);
   if (msg.spec) {
     const players = Array.isArray(msg.spec.players) ? msg.spec.players : [];
-    for (const player of players) updateDamageUnits(player?.units || player?.board || [], 'battle-spec');
+    for (const player of players) {
+      ensureDamagePlayer(player);
+      updateDamageUnits(player?.units || player?.board || [], 'battle-spec', player);
+    }
   }
   parseBattleEvents(msg);
 }
 
-function parseResultDamage(msg) {
+function parseResultDamage(msg, allowFinal = false) {
+  if (state.damage.paused || (!state.damage.collecting && !allowFinal)) return;
   const result = msg?.result && typeof msg.result === 'object' ? msg.result : msg;
   for (const player of Array.isArray(result?.players) ? result.players : []) {
-    updateDamageUnits(player?.unitStats || [], 'result');
+    ensureDamagePlayer(player);
+    updateDamagePlayers([player], allowFinal, msg?.battleId);
+    updateDamageUnits(player?.unitStats || [], 'result', player, msg?.battleId, allowFinal);
     const units = player?.units || player?.lineup || [];
-    updateDamageUnits(units, 'result-units');
+    updateDamageUnits(units, 'result-units', player, msg?.battleId, allowFinal);
     if (player?.stats?.dmgDealt != null) {
       // Keep team-level result visible as unattributed when no per-operator stats exist.
       if (!Array.isArray(player.unitStats) || !player.unitStats.length) {
@@ -671,7 +1058,7 @@ function parseResultDamage(msg) {
       }
     }
   }
-  updateDamageUnits(result?.unitStats || [], 'result');
+  updateDamageUnits(result?.unitStats || [], 'result', {}, msg?.battleId, allowFinal);
   scheduleRender('damage');
 }
 
@@ -715,6 +1102,10 @@ let root = null;
 let els = {};
 let damageRoot = null;
 let damageEls = {};
+let playerDamageRoot = null;
+let playerDamageEls = {};
+let enemyDamageRoot = null;
+let enemyDamageEls = {};
 let damageMounted = false;
 
 function iconBtn(id, glyph, title, onClick) {
@@ -768,6 +1159,12 @@ function damageTypesText(types) {
   return entries.length ? entries.slice(0, 4).map(([key, n]) => `${damageTypeText(key)} ${formatDamageNumber(n)}`).join(' · ') : '—';
 }
 
+function damageTypesForDisplay(record) {
+  if (!record) return '—';
+  const current = damageTypesText(record.currentTypes);
+  return current !== '—' ? current : damageTypesText(record.totalTypes);
+}
+
 function activeEffectsText(rec) {
   const effects = [...(rec?.effects?.values?.() || [])]
     .filter((e) => e.active || now() - e.endedAt < 8000)
@@ -776,9 +1173,26 @@ function activeEffectsText(rec) {
   return effects.length ? effects.map(effectText).join('；') : '—';
 }
 
+function buildDamageSection(id, label, content, collapsed = false) {
+  const section = h('div', { class: 'rh-sec rh-damage-sec', id: `rh-damage-sec-${id}` });
+  const fold = h('button', {
+    class: 'rh-mini', title: '折叠 / 展开这一栏',
+    onclick: () => {
+      const next = section.classList.toggle('is-folded');
+      fold.textContent = next ? '+' : '−';
+      state.cfg.damageWindow[`${id}Collapsed`] = next;
+      saveConfig();
+    },
+  }, collapsed ? '+' : '−');
+  const head = h('div', { class: 'rh-sec-head' }, h('span', { class: 'rh-sec-label', text: label }), fold);
+  section.append(head, content);
+  if (collapsed) section.classList.add('is-folded');
+  return { section, fold };
+}
+
 function damageWindowPlace() {
   if (!damageRoot) return;
-  const cfg = state.cfg.damageWindow;
+  const cfg = state.cfg.damageWindow.windows.operators;
   const vw = globalThis.innerWidth || 1024;
   const vh = globalThis.innerHeight || 768;
   const w = damageRoot.offsetWidth || cfg.width || 620;
@@ -790,6 +1204,7 @@ function damageWindowPlace() {
 }
 
 function enableDamageWindowDrag() {
+  const cfg = state.cfg.damageWindow.windows.operators;
   const head = damageRoot?.querySelector('.rh-damage-head');
   if (!head || head.dataset.dragBound) return;
   head.dataset.dragBound = '1';
@@ -809,23 +1224,66 @@ function enableDamageWindowDrag() {
   const end = () => {
     if (!active) return;
     active = false; damageRoot.classList.remove('is-dragging');
-    state.cfg.damageWindow.x = damageRoot.offsetLeft; state.cfg.damageWindow.y = damageRoot.offsetTop; saveConfig();
+    cfg.x = damageRoot.offsetLeft; cfg.y = damageRoot.offsetTop; saveConfig();
   };
   head.addEventListener('pointerup', end); head.addEventListener('pointercancel', end);
+
+  const grip = damageRoot?.querySelector('.rh-damage-grip');
+  if (!grip) return;
+  let resizing = false, rw = 0, rh = 0, rsx = 0, rsy = 0;
+  grip.addEventListener('pointerdown', (ev) => {
+    resizing = true;
+    rw = damageRoot.offsetWidth; rh = damageRoot.offsetHeight;
+    rsx = ev.clientX; rsy = ev.clientY;
+    damageRoot.classList.add('is-resizing');
+    grip.setPointerCapture?.(ev.pointerId);
+    ev.preventDefault(); ev.stopPropagation();
+  });
+  grip.addEventListener('pointermove', (ev) => {
+    if (!resizing) return;
+    const vw = globalThis.innerWidth || 1024, vh = globalThis.innerHeight || 768;
+    const width = clamp(rw + ev.clientX - rsx, 360, Math.min(860, vw - 16));
+    const height = clamp(rh + ev.clientY - rsy, 240, Math.min(900, vh - 16));
+    damageRoot.style.setProperty('--rh-damage-w', `${width}px`);
+    damageRoot.style.height = `${height}px`;
+  });
+  const endResize = (ev) => {
+    if (!resizing) return;
+    resizing = false;
+    damageRoot.classList.remove('is-resizing');
+    grip.releasePointerCapture?.(ev.pointerId);
+    cfg.width = damageRoot.offsetWidth;
+    cfg.height = damageRoot.offsetHeight;
+    saveConfig();
+  };
+  grip.addEventListener('pointerup', endResize); grip.addEventListener('pointercancel', endResize);
 }
 
 function buildDamageWindow() {
-  damageRoot = h('div', { class: 'rh-damage-window', id: 'rh-damage-window', role: 'dialog', 'aria-label': '干员伤害统计' });
-  damageRoot.style.setProperty('--rh-damage-w', `${clamp(Number(state.cfg.damageWindow.width) || 620, 360, 860)}px`);
+  const cfg = state.cfg.damageWindow.windows.operators;
+  damageRoot = h('div', { class: 'rh-damage-window', id: 'rh-damage-window', role: 'dialog', 'aria-label': '战斗伤害统计' });
+  damageRoot.style.setProperty('--rh-damage-w', `${clamp(Number(cfg.width) || 620, 360, 860)}px`);
+  damageRoot.style.setProperty('--rh-damage-scale', String(clamp(Number(state.cfg.damageWindow.fontScale) || 1, 0.8, 1.5)));
+  const columnMins = { name: 100, current: 52, total: 52, types: 96, effects: 140 };
+  const columnMaxs = { name: 360, current: 180, total: 180, types: 360, effects: 520 };
+  for (const [col, width] of Object.entries(cfg.columnWidths || state.cfg.damageWindow.columnWidths || {})) {
+    if (Number.isFinite(Number(width)) && columnMins[col]) {
+      damageRoot.style.setProperty(`--rh-damage-col-${col}`, `${clamp(Number(width), columnMins[col], columnMaxs[col])}px`);
+    }
+  }
+  if (Number.isFinite(Number(cfg.height))) {
+    damageRoot.style.height = `${clamp(Number(cfg.height), 240, Math.max(240, (globalThis.innerHeight || 768) - 16))}px`;
+  }
   const fold = h('button', { class: 'rh-ibtn', id: 'rh-damage-fold', title: '折叠 / 展开', onclick: () => {
-    state.cfg.damageWindow.collapsed = !state.cfg.damageWindow.collapsed;
-    damageRoot.classList.toggle('is-collapsed', state.cfg.damageWindow.collapsed);
+    cfg.collapsed = !cfg.collapsed;
+    damageRoot.classList.toggle('is-collapsed', cfg.collapsed);
+    fold.textContent = cfg.collapsed ? '+' : '—';
     saveConfig();
-  } }, state.cfg.damageWindow.collapsed ? '+' : '—');
+  } }, cfg.collapsed ? '+' : '—');
   const close = h('button', { class: 'rh-ibtn rh-ibtn--x', id: 'rh-damage-close', title: '关闭伤害统计窗口', onclick: () => { hideDamageWindow(); syncMenu(); } }, '×');
   const head = h('div', { class: 'rh-damage-head' },
     h('span', { class: 'rh-dot is-ok', id: 'rh-damage-dot' }),
-    h('span', { class: 'rh-damage-title', text: '干员伤害统计' }),
+    h('span', { class: 'rh-damage-title', text: '干员伤害' }),
     h('span', { class: 'rh-damage-round', id: 'rh-damage-round', text: '等待战斗' }),
     h('div', { class: 'rh-head-actions' }, fold, close),
   );
@@ -833,20 +1291,194 @@ function buildDamageWindow() {
   const table = h('div', { class: 'rh-damage-table', id: 'rh-damage-table' });
   const effects = h('div', { class: 'rh-damage-team-effects', id: 'rh-damage-team-effects' });
   const foot = h('div', { class: 'rh-damage-foot', text: '本回合 / 全局 · 伤害类型 · 增益/减益持续时间' });
-  damageRoot.append(head, summary, table, effects, foot);
-  if (state.cfg.damageWindow.collapsed) damageRoot.classList.add('is-collapsed');
-  damageEls = { head, fold, round: $('#rh-damage-round', damageRoot), summary, table, effects, foot };
+  const operatorSection = buildDamageSection('operators', '干员伤害', table, !!cfg.collapsed);
+  const body = h('div', { class: 'rh-body rh-damage-body', id: 'rh-damage-body' }, operatorSection.section, effects);
+  const grip = h('div', { class: 'rh-damage-grip', id: 'rh-damage-grip', title: '拖动调整伤害窗口大小', 'aria-label': '拖动调整伤害窗口大小' });
+  damageRoot.append(head, summary, body, foot, grip);
+  if (cfg.collapsed) damageRoot.classList.add('is-collapsed');
+  damageEls = { head, fold, round: $('#rh-damage-round', damageRoot), summary, table, effects, foot, grip, body, operatorSection };
+  enableDamageColumnResize();
   enableDamageWindowDrag();
   return damageRoot;
+}
+
+function buildSimpleDamageWindow(kind, title, ariaLabel) {
+  const cfg = state.cfg.damageWindow.windows[kind];
+  const panel = h('div', { class: 'rh-damage-window', id: `rh-${kind}-damage-window`, role: 'dialog', 'aria-label': ariaLabel });
+  panel.style.setProperty('--rh-damage-w', `${clamp(Number(cfg.width) || 420, 320, 860)}px`);
+  panel.style.setProperty('--rh-damage-scale', String(clamp(Number(state.cfg.damageWindow.fontScale) || 1, 0.8, 1.5)));
+  const limits = kind === 'players'
+    ? { name: [90, 360], current: [52, 180], total: [52, 180], types: [96, 360] }
+    : { name: [100, 360], current: [52, 180], total: [52, 180], types: [96, 360], targets: [140, 520] };
+  const prefix = kind === 'players' ? '--rh-player-col-' : '--rh-damage-col-';
+  for (const [col, width] of Object.entries(cfg.columnWidths || {})) if (limits[col]) panel.style.setProperty(`${prefix}${col}`, `${clamp(Number(width), limits[col][0], limits[col][1])}px`);
+  if (Number.isFinite(Number(cfg.height))) panel.style.height = `${clamp(Number(cfg.height), 220, Math.max(220, (globalThis.innerHeight || 768) - 16))}px`;
+  const fold = h('button', { class: 'rh-ibtn', title: '折叠 / 展开', onclick: () => {
+    cfg.collapsed = !cfg.collapsed;
+    panel.classList.toggle('is-collapsed', cfg.collapsed);
+    fold.textContent = cfg.collapsed ? '+' : '—';
+    saveConfig();
+  } }, cfg.collapsed ? '+' : '—');
+  const close = h('button', { class: 'rh-ibtn rh-ibtn--x', title: `关闭${title}`, onclick: () => { hideDamageWindow(); syncMenu(); } }, '×');
+  const head = h('div', { class: 'rh-damage-head' },
+    h('span', { class: 'rh-dot is-ok' }),
+    h('span', { class: 'rh-damage-title', text: title }),
+    h('span', { class: 'rh-damage-round', text: '等待战斗' }),
+    h('div', { class: 'rh-head-actions' }, fold, close),
+  );
+  const summary = h('div', { class: 'rh-damage-summary', text: '等待战斗数据…' });
+  const body = h('div', { class: 'rh-body rh-damage-body' });
+  const foot = h('div', { class: 'rh-damage-foot', text: '本回合 / 全局 · 伤害类型' });
+  const grip = h('div', { class: 'rh-damage-grip', title: '拖动调整窗口大小', 'aria-label': '拖动调整窗口大小' });
+  panel.append(head, summary, body, foot, grip);
+  if (cfg.collapsed) panel.classList.add('is-collapsed');
+  enableSimpleDamageDrag(panel, cfg);
+  enableSimpleDamageResize(panel, cfg);
+  enableSimpleColumnResize(panel, cfg, kind, limits, prefix);
+  return { panel, els: { head, fold, round: head.querySelector('.rh-damage-round'), summary, body, foot, grip } };
+}
+
+function enableSimpleDamageDrag(panel, cfg) {
+  const head = panel.querySelector('.rh-damage-head');
+  if (!head) return;
+  let active = false, sx = 0, sy = 0, ox = 0, oy = 0;
+  head.addEventListener('pointerdown', (ev) => {
+    if (ev.target.closest('button')) return;
+    active = true; sx = ev.clientX; sy = ev.clientY; ox = panel.offsetLeft; oy = panel.offsetTop;
+    panel.classList.add('is-dragging'); head.setPointerCapture?.(ev.pointerId); ev.preventDefault();
+  });
+  head.addEventListener('pointermove', (ev) => {
+    if (!active) return;
+    const vw = globalThis.innerWidth || 1024, vh = globalThis.innerHeight || 768;
+    panel.style.left = `${clamp(ox + ev.clientX - sx, 8, Math.max(8, vw - panel.offsetWidth - 8))}px`;
+    panel.style.top = `${clamp(oy + ev.clientY - sy, 8, Math.max(8, vh - panel.offsetHeight - 8))}px`;
+  });
+  const end = (ev) => {
+    if (!active) return;
+    active = false; panel.classList.remove('is-dragging'); head.releasePointerCapture?.(ev.pointerId);
+    cfg.x = panel.offsetLeft; cfg.y = panel.offsetTop; saveConfig();
+  };
+  head.addEventListener('pointerup', end); head.addEventListener('pointercancel', end);
+}
+
+function enableSimpleDamageResize(panel, cfg) {
+  const grip = panel.querySelector('.rh-damage-grip');
+  if (!grip) return;
+  let resizing = false, rw = 0, rh = 0, sx = 0, sy = 0;
+  grip.addEventListener('pointerdown', (ev) => {
+    resizing = true; rw = panel.offsetWidth; rh = panel.offsetHeight; sx = ev.clientX; sy = ev.clientY;
+    panel.classList.add('is-resizing'); grip.setPointerCapture?.(ev.pointerId); ev.preventDefault(); ev.stopPropagation();
+  });
+  grip.addEventListener('pointermove', (ev) => {
+    if (!resizing) return;
+    const vw = globalThis.innerWidth || 1024, vh = globalThis.innerHeight || 768;
+    const width = clamp(rw + ev.clientX - sx, 320, Math.min(860, vw - 16));
+    const height = clamp(rh + ev.clientY - sy, 220, Math.min(900, vh - 16));
+    panel.style.setProperty('--rh-damage-w', `${width}px`);
+    panel.style.height = `${height}px`;
+  });
+  const end = (ev) => {
+    if (!resizing) return;
+    resizing = false; panel.classList.remove('is-resizing'); grip.releasePointerCapture?.(ev.pointerId);
+    cfg.width = panel.offsetWidth; cfg.height = panel.offsetHeight; saveConfig();
+  };
+  grip.addEventListener('pointerup', end); grip.addEventListener('pointercancel', end);
+}
+
+function enableSimpleColumnResize(panel, cfg, kind, limits, prefix) {
+  panel.addEventListener('pointerdown', (ev) => {
+    const cell = ev.target.closest('[data-damage-col]');
+    if (!cell || !panel.contains(cell)) return;
+    const col = cell.dataset.damageCol;
+    if (!limits[col]) return;
+    const rect = cell.getBoundingClientRect();
+    if (ev.clientX < rect.right - 12) return;
+    const startX = ev.clientX;
+    const startWidth = Math.max(limits[col][0], rect.width);
+    const move = (e) => {
+      const width = clamp(startWidth + e.clientX - startX, limits[col][0], limits[col][1]);
+      panel.style.setProperty(`${prefix}${col}`, `${width}px`);
+    };
+    const end = (e) => {
+      cell.releasePointerCapture?.(e.pointerId);
+      cell.removeEventListener('pointermove', move);
+      cell.removeEventListener('pointerup', end);
+      cell.removeEventListener('pointercancel', end);
+      const width = clamp(Math.round(cell.getBoundingClientRect().width), limits[col][0], limits[col][1]);
+      cfg.columnWidths = { ...(cfg.columnWidths || {}), [col]: width };
+      saveConfig();
+    };
+    cell.setPointerCapture?.(ev.pointerId);
+    cell.addEventListener('pointermove', move);
+    cell.addEventListener('pointerup', end);
+    cell.addEventListener('pointercancel', end);
+    ev.preventDefault(); ev.stopPropagation();
+  });
+}
+
+function placeSimpleDamageWindow(panel, cfg, offsetX = 0, offsetY = 0) {
+  if (!panel) return;
+  const vw = globalThis.innerWidth || 1024, vh = globalThis.innerHeight || 768;
+  const w = panel.offsetWidth || cfg.width || 420;
+  const hgt = panel.offsetHeight || 260;
+  const x = cfg.x == null ? Math.max(8, vw - w - 16 - offsetX) : cfg.x;
+  const y = cfg.y == null ? Math.max(8, vh - hgt - 20 - offsetY) : cfg.y;
+  panel.style.left = `${clamp(x, 8, Math.max(8, vw - w - 8))}px`;
+  panel.style.top = `${clamp(y, 8, Math.max(8, vh - hgt - 8))}px`;
+}
+
+function enableDamageColumnResize() {
+  if (!damageEls.table || damageEls.table.dataset.resizeBound) return;
+  damageEls.table.dataset.resizeBound = '1';
+  const cols = ['name', 'current', 'total', 'types', 'effects'];
+  const mins = { name: 100, current: 52, total: 52, types: 96, effects: 140 };
+  const maxs = { name: 360, current: 180, total: 180, types: 360, effects: 520 };
+  damageEls.table.addEventListener('pointerdown', (ev) => {
+    const cell = ev.target.closest('.rh-damage-head-row [data-damage-col]');
+    if (!cell || !damageEls.table.contains(cell)) return;
+    const col = cell.dataset.damageCol;
+    if (!cols.includes(col)) return;
+    // Resize from the divider on the cell's right edge. Starting in the text
+    // area used to make the whole header behave like a handle and made the
+    // movement feel reversed when the pointer was not on the divider.
+    const rect = cell.getBoundingClientRect();
+    if (ev.clientX < rect.right - 12) return;
+    const startX = ev.clientX;
+    const startWidth = Math.max(mins[col], rect.width);
+    const move = (e) => {
+      const width = clamp(startWidth + (e.clientX - startX), mins[col], maxs[col]);
+      damageRoot.style.setProperty(`--rh-damage-col-${col}`, `${width}px`);
+    };
+    const end = (e) => {
+      cell.releasePointerCapture?.(e.pointerId);
+      cell.removeEventListener('pointermove', move);
+      cell.removeEventListener('pointerup', end);
+      cell.removeEventListener('pointercancel', end);
+      const width = clamp(Math.round(cell.getBoundingClientRect().width), mins[col], maxs[col]);
+      state.cfg.damageWindow.windows.operators.columnWidths = { ...(state.cfg.damageWindow.windows.operators.columnWidths || {}), [col]: width };
+      saveConfig();
+    };
+    cell.setPointerCapture?.(ev.pointerId);
+    cell.addEventListener('pointermove', move);
+    cell.addEventListener('pointerup', end);
+    cell.addEventListener('pointercancel', end);
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
 }
 
 function showDamageWindow() {
   if (damageMounted) return;
   if (!damageRoot) buildDamageWindow();
+  if (!playerDamageRoot) ({ panel: playerDamageRoot, els: playerDamageEls } = buildSimpleDamageWindow('players', '玩家伤害', '玩家伤害统计'));
+  if (!enemyDamageRoot) ({ panel: enemyDamageRoot, els: enemyDamageEls } = buildSimpleDamageWindow('enemies', '敌人伤害', '敌人伤害统计'));
   document.body.append(damageRoot);
+  document.body.append(playerDamageRoot, enemyDamageRoot);
   damageMounted = true;
   state.cfg.damageWindow.visible = true;
   damageWindowPlace();
+  placeSimpleDamageWindow(playerDamageRoot, state.cfg.damageWindow.windows.players, 260, 0);
+  placeSimpleDamageWindow(enemyDamageRoot, state.cfg.damageWindow.windows.enemies, 0, 300);
   renderDamage();
   syncMenu();
 }
@@ -854,39 +1486,100 @@ function showDamageWindow() {
 function hideDamageWindow() {
   if (!damageMounted) return;
   state.cfg.damageWindow.visible = false;
-  damageRoot.remove();
+  damageRoot?.remove(); playerDamageRoot?.remove(); enemyDamageRoot?.remove();
   damageMounted = false;
   saveConfig();
   syncMenu();
 }
 
+function operatorDamageRows() {
+  return [...state.damage.units.values()]
+    .filter(isOperatorRecord)
+    .sort((a, b) => b.current - a.current || b.total - a.total || String(a.name).localeCompare(String(b.name), 'zh'));
+}
+
+function playerDamageRows() {
+  return [...state.damage.players.values()]
+    .sort((a, b) => b.current - a.current || b.total - a.total || a.name.localeCompare(b.name, 'zh'));
+}
+
+function enemyDamageRows() {
+  return [...state.damage.enemies.values()]
+    .sort((a, b) => b.current - a.current || b.total - a.total || String(a.name).localeCompare(String(b.name), 'zh'));
+}
+
+function renderPlayerDamagePanel(players) {
+  if (!playerDamageEls.body) return;
+  playerDamageEls.round.textContent = state.damage.round == null ? '等待战斗' : `第 ${state.damage.round} 回合`;
+  playerDamageEls.summary.textContent = players.length
+    ? `本回合 ${formatDamageNumber(players.reduce((n, p) => n + p.current, 0))} · 全局 ${formatDamageNumber(players.reduce((n, p) => n + p.total, 0))}`
+    : '等待玩家伤害数据…';
+  if (!players.length) { playerDamageEls.body.replaceChildren(h('div', { class: 'rh-damage-empty', text: '尚未收到玩家伤害事件' })); return; }
+  const head = h('div', { class: 'rh-damage-player-row rh-damage-player-head' },
+    ...[['name', '玩家'], ['current', '本回合'], ['total', '全局累计'], ['types', '类型']]
+      .map(([col, text]) => h('span', { class: 'rh-damage-col-head', 'data-damage-col': col, text, title: '拖动调整列宽' })));
+  playerDamageEls.body.replaceChildren(head, ...players.map((player) => h('div', { class: `rh-damage-player-row ${player.current > 0 ? 'is-active' : ''}` },
+    h('span', { class: 'rh-damage-player-name', text: player.name }),
+    h('span', { class: 'rh-damage-num', text: formatDamageNumber(player.current) }),
+    h('span', { class: 'rh-damage-num', text: formatDamageNumber(player.total) }),
+    h('span', { class: 'rh-damage-types', text: damageTypesForDisplay(player) }),
+  )));
+}
+
+function renderEnemyDamagePanel(enemies) {
+  if (!enemyDamageEls.body) return;
+  enemyDamageEls.round.textContent = state.damage.round == null ? '等待战斗' : `第 ${state.damage.round} 回合`;
+  enemyDamageEls.summary.textContent = enemies.length
+    ? `本回合 ${formatDamageNumber(enemies.reduce((n, e) => n + e.current, 0))} · 全局 ${formatDamageNumber(enemies.reduce((n, e) => n + e.total, 0))}`
+    : '等待敌方伤害数据…';
+  if (!enemies.length) { enemyDamageEls.body.replaceChildren(h('div', { class: 'rh-damage-empty', text: '尚未收到敌方伤害事件' })); return; }
+  const head = h('div', { class: 'rh-damage-row rh-damage-head-row' },
+    ...[['name', '敌人'], ['current', '本回合'], ['total', '全局'], ['types', '伤害类型'], ['targets', '受伤干员']]
+      .map(([col, text]) => h('span', { class: 'rh-damage-col-head', 'data-damage-col': col, text, title: '拖动调整列宽' })));
+  enemyDamageEls.body.replaceChildren(head, ...enemies.map((enemy) => {
+    const details = [...enemy.targets.values()].sort((a, b) => b.current - a.current).slice(0, 8)
+      .map((target) => `${target.name} ${formatDamageNumber(target.current)}`).join('；') || '—';
+    return h('div', { class: `rh-damage-row ${enemy.current > 0 ? 'is-active' : ''}` },
+      h('span', { class: 'rh-damage-name', text: enemy.name }),
+      h('span', { class: 'rh-damage-num', text: formatDamageNumber(enemy.current) }),
+      h('span', { class: 'rh-damage-num', text: formatDamageNumber(enemy.total) }),
+      h('span', { class: 'rh-damage-types', text: damageTypesForDisplay(enemy) }),
+      h('span', { class: 'rh-damage-effects', text: details }),
+    );
+  }));
+}
+
 function renderDamage() {
   if (!damageMounted || !damageEls.table) return;
   const d = state.damage;
-  const rows = [...d.units.values()].filter(isOperatorRecord).sort((a, b) => b.current - a.current || b.total - a.total || String(a.name).localeCompare(String(b.name), 'zh'));
+  const rows = operatorDamageRows();
   const allCurrent = rows.reduce((sum, rec) => sum + rec.current, 0) + d.unattributed.current;
   const allTotal = rows.reduce((sum, rec) => sum + rec.total, 0) + d.unattributed.total;
   damageEls.round.textContent = d.round == null ? '等待战斗' : `第 ${d.round} 回合`;
   damageEls.summary.textContent = d.round == null
     ? '等待战斗事件；进入战斗后这里会实时更新。'
     : `本回合 ${formatDamageNumber(allCurrent)} · 全局 ${formatDamageNumber(allTotal)} · ${rows.length} 名干员`;
+  const players = playerDamageRows();
+  renderPlayerDamagePanel(players);
+  renderEnemyDamagePanel(enemyDamageRows());
   if (!rows.length && !d.unattributed.current && !d.unattributed.total) {
     damageEls.table.replaceChildren(h('div', { class: 'rh-damage-empty', text: '尚未收到干员伤害事件' }));
   } else {
     const head = h('div', { class: 'rh-damage-row rh-damage-head-row' },
-      h('span', { text: '干员' }), h('span', { text: '本回合' }), h('span', { text: '全局' }), h('span', { text: '伤害类型' }), h('span', { text: '增益 / 减益' }));
+      ...[['name', '干员'], ['current', '本回合'], ['total', '全局'], ['types', '伤害类型'], ['effects', '增益 / 减益']]
+        .map(([col, text]) => h('span', { class: 'rh-damage-col-head', 'data-damage-col': col, text, title: '拖动调整列宽' })));
     const body = rows.map((rec) => h('div', { class: `rh-damage-row ${rec.current > 0 ? 'is-active' : ''}` },
       h('span', { class: 'rh-damage-name', title: rec.uid ? `${rec.name} · ${rec.uid}` : rec.name, text: rec.name }),
       h('span', { class: 'rh-damage-num', text: formatDamageNumber(rec.current) }),
       h('span', { class: 'rh-damage-num', text: formatDamageNumber(rec.total) }),
-      h('span', { class: 'rh-damage-types', text: damageTypesText(rec.currentTypes) }),
+      h('span', { class: 'rh-damage-types', text: damageTypesForDisplay(rec) }),
       h('span', { class: 'rh-damage-effects', text: activeEffectsText(rec) }),
     ));
     if (d.unattributed.current || d.unattributed.total) body.push(h('div', { class: 'rh-damage-row is-unattributed' },
       h('span', { class: 'rh-damage-name', text: '未归属伤害' }),
       h('span', { class: 'rh-damage-num', text: formatDamageNumber(d.unattributed.current) }),
       h('span', { class: 'rh-damage-num', text: formatDamageNumber(d.unattributed.total) }),
-      h('span', { class: 'rh-damage-types', text: damageTypesText(d.unattributed.currentTypes) }),
+      h('span', { class: 'rh-damage-types', text: damageTypesForDisplay(d.unattributed) }),
       h('span', { class: 'rh-damage-effects', text: '协议未提供来源' }),
     ));
     damageEls.table.replaceChildren(head, ...body);
@@ -1036,6 +1729,11 @@ function buildUi() {
         root.style.setProperty('--rh-idle-opacity', String(v));
         saveConfig();
       }),
+      sliderRow('rh-damage-font-slider', '伤害文字', 0.8, 1.5, 0.05, state.cfg.damageWindow.fontScale, (v) => {
+        state.cfg.damageWindow.fontScale = v;
+        for (const panel of [damageRoot, playerDamageRoot, enemyDamageRoot]) if (panel) panel.style.setProperty('--rh-damage-scale', String(v));
+        saveConfig();
+      }),
       h('button', {
         class: 'rh-reset rh-reset--row', id: 'rh-grip-alt', text: '拖动这里也能改宽度',
         onclick: () => toggleSection('settings'),
@@ -1053,6 +1751,9 @@ function buildUi() {
       h('button', {
         class: 'rh-reset', text: '恢复默认位置与外观',
         onclick: () => {
+          const wasDamageMounted = damageMounted;
+          if (wasDamageMounted) hideDamageWindow();
+          else { damageRoot = null; playerDamageRoot = null; enemyDamageRoot = null; damageEls = {}; playerDamageEls = {}; enemyDamageEls = {}; }
           localStorage.removeItem(STORAGE_KEY);
           Object.assign(state.cfg, { ...DEFAULTS, show: { ...DEFAULTS.show }, damageWindow: { ...DEFAULTS.damageWindow }, folded: {}, logExpanded: [] });
           root.style.setProperty('--rh-opacity', String(DEFAULTS.opacity));
@@ -1067,6 +1768,10 @@ function buildUi() {
             if (btn) btn.textContent = folded ? '+' : '−';
           }
           applyWidth(DEFAULTS.width);
+          for (const panel of [damageRoot, playerDamageRoot, enemyDamageRoot]) if (panel) {
+            panel.style.removeProperty('height');
+            panel.style.setProperty('--rh-damage-scale', String(DEFAULTS.damageWindow.fontScale));
+          }
           syncMenu();
           syncToggles();
           syncPresetChips();
@@ -1258,6 +1963,9 @@ function applyConfigToDom() {
   const ov = o?.parentElement?.querySelector('.rh-set-val'); if (ov) ov.textContent = state.cfg.opacity.toFixed(2);
   const i = $('#rh-idle-slider', root); if (i) i.value = state.cfg.idleOpacity;
   const iv = i?.parentElement?.querySelector('.rh-set-val'); if (iv) iv.textContent = state.cfg.idleOpacity.toFixed(2);
+  const df = $('#rh-damage-font-slider', root); if (df) df.value = state.cfg.damageWindow.fontScale;
+  const dfv = df?.parentElement?.querySelector('.rh-set-val'); if (dfv) dfv.textContent = `${Number(state.cfg.damageWindow.fontScale).toFixed(2)}x`;
+  for (const panel of [damageRoot, playerDamageRoot, enemyDamageRoot]) if (panel) panel.style.setProperty('--rh-damage-scale', String(state.cfg.damageWindow.fontScale));
   syncToggles();
   syncChips();
   syncWarnBadge();
@@ -2034,6 +2742,7 @@ function attachNet() {
         const prev = state.room;
         state.room = msg;
         if (msg.code && msg.code !== prev?.code) resetDamageSession();
+        for (const seat of Array.isArray(msg.seats) ? msg.seats : []) if (seat?.playerId) ensureDamagePlayer(seat);
         if (msg.code && msg.code !== prev?.code) {
           pushLog('state', `房间 ${msg.code}`, `${msg.mode === 'solo' ? '独立' : '同盟'} · ${msg.difficulty}`);
         }
@@ -2048,6 +2757,7 @@ function attachNet() {
         const prevPhase = state.match?.phase;
         state.match = msg;
         parseDamageFrame(msg);
+        updateDamagePlayers(msg.players, false, msg.battleId);
         if (msg.phase && msg.phase !== prevPhase) {
           const round = msg.lastRound ? ` · 第 ${msg.round}/${msg.lastRound} 回合` : '';
           pushLog('state', `阶段 → ${phaseName(msg.phase)}`, `${msg.modeId || ''}${round}`);
@@ -2056,7 +2766,7 @@ function attachNet() {
         break;
       }
       case 'm.result':
-        parseResultDamage(msg);
+        parseResultDamage(msg, true);
         state.match = null;
         pushLog('state', '本局结算', summariseResult(msg));
         scheduleRender('match');
@@ -2094,12 +2804,12 @@ function attachNet() {
         break;
       }
       case 'm.private':
-        updateDamageUnits(msg.board || msg.units || [], 'private');
+        ensureDamagePlayer({ playerId: msg.playerId, name: msg.name });
+        updateDamagePlayers([{ playerId: msg.playerId, name: msg.name, stats: msg.stats }]);
+        updateDamageUnits(msg.board || msg.units || [], 'private', { playerId: msg.playerId });
         parseTeamEffects(msg.effects);
         break;
       case 'm.field':
-        updateDamageUnits(msg.units || [], 'field');
-        parseTeamEffects(msg.effects);
         parseDamageFrame(msg);
         break;
       case 'b.start':
@@ -2109,11 +2819,11 @@ function attachNet() {
         parseDamageFrame(msg);
         break;
       case 'b.result':
-        parseResultDamage(msg);
+        parseResultDamage(msg, true);
         break;
       case 'm.unitStats':
         if (msg.round != null) resetDamageRound(msg.round);
-        updateDamageUnits(msg.units || [], 'unitStats');
+        updateDamageUnits(msg.units || [], 'unitStats', { playerId: state.playerId });
         break;
       default:
         if (STANDALONE.has(msg.t)) pushLog('state', `收到 ${msg.t}`);
@@ -2139,6 +2849,66 @@ function attachStore() {
   } catch {
     state._storeAttached = false;
   }
+}
+
+function attachNetWhenReady() {
+  if (attachNet()) return;
+  if (state._netRetry) return;
+  state._netRetry = globalThis.setInterval(() => {
+    if (attachNet()) {
+      globalThis.clearInterval(state._netRetry);
+      state._netRetry = null;
+    }
+  }, 100);
+}
+
+function attachRunner() {
+  const runner = globalThis.__SP_RUNNER__;
+  if (!runner || typeof runner.on !== 'function' || state._runnerAttached) return false;
+  state._runnerAttached = true;
+  runner.on('field', (msg) => parseDamageFrame(msg));
+  runner.on('ev', (msg) => parseDamageFrame(msg));
+  runner.on('result', (msg) => parseResultDamage(msg, true));
+  runner.on('state', (snap) => {
+    if (!snap || snap.done) setDamageLifecycle({ active: false, paused: false, phase: null });
+    else setDamageLifecycle({ active: true, paused: !!snap.paused, phase: state.damage.phase || 'RUNNER' });
+  });
+  return true;
+}
+
+function attachRunnerWhenReady() {
+  if (attachRunner()) return;
+  if (state._runnerRetry) return;
+  state._runnerRetry = globalThis.setInterval(() => {
+    if (attachRunner()) {
+      globalThis.clearInterval(state._runnerRetry);
+      state._runnerRetry = null;
+    }
+  }, 100);
+}
+
+function attachDataWhenReady() {
+  const data = globalThis.__SP__?.data;
+  if (!data || typeof data.lookup !== 'function') {
+    if (!state._dataRetry) state._dataRetry = globalThis.setInterval(attachDataWhenReady, 100);
+    return;
+  }
+  if (state._dataRetry) {
+    globalThis.clearInterval(state._dataRetry);
+    state._dataRetry = null;
+  }
+  refreshDamageNames();
+  // Loading effects is harmless when the game has already cached it, and makes
+  // the localized labels available as soon as a battle starts.
+  data.load?.('effects')?.catch?.(() => {});
+  data.load?.('enemies')?.catch?.(() => {});
+  data.load?.('chess')?.catch?.(() => {});
+  data.load?.('tokens')?.catch?.(() => {});
+  if (state._dataAttached || typeof data.subscribe !== 'function') return;
+  state._dataAttached = true;
+  data.subscribe((name) => {
+    if (name === 'chess' || name === 'tokens' || name === 'effects' || name === 'enemies') refreshDamageNames();
+  });
 }
 
 function summariseResult(msg) {
@@ -2262,8 +3032,12 @@ function placeInitial() {
  */
 function applyWidth(w, anchorRight = true) {
   const vw = globalThis.innerWidth;
-  const next = clamp(Math.round(w), WIDTH_MIN, WIDTH_MAX);
   const current = root.offsetWidth;
+  const viewportMax = Math.max(WIDTH_MIN, vw - 16);
+  const positionMax = !anchorRight && state.mounted
+    ? Math.max(WIDTH_MIN, vw - root.offsetLeft - 8)
+    : viewportMax;
+  const next = clamp(Math.round(w), WIDTH_MIN, Math.min(WIDTH_MAX, positionMax));
   root.style.setProperty('--rh-w', `${next}px`);
   state.cfg.width = next;
 
@@ -2303,8 +3077,8 @@ function enableDrag() {
   head.addEventListener('pointermove', (ev) => {
     if (!dragging) return;
     const vw = globalThis.innerWidth, vh = globalThis.innerHeight;
-    root.style.left = `${clamp(sl + (ev.clientX - sx), 0, vw - 60)}px`;
-    root.style.top = `${clamp(st + (ev.clientY - sy), 0, vh - 40)}px`;
+    root.style.left = `${clamp(sl + (ev.clientX - sx), 8, Math.max(8, vw - root.offsetWidth - 8))}px`;
+    root.style.top = `${clamp(st + (ev.clientY - sy), 8, Math.max(8, vh - root.offsetHeight - 8))}px`;
   });
 
   const end = (ev) => {
@@ -2335,7 +3109,9 @@ function enableDrag() {
   });
   els.grip.addEventListener('pointermove', (ev) => {
     if (!resizing) return;
-    applyWidth(startW + (ev.clientX - startX));
+    // The grip is on the right edge, so keep the left edge fixed while the pointer changes width.
+    // Anchoring the right edge here made the panel appear to jump left and right while dragging.
+    applyWidth(startW + (ev.clientX - startX), false);
   });
   const endResize = (ev) => {
     if (!resizing) return;
@@ -2356,6 +3132,11 @@ function enableDrag() {
     const maxLeft = Math.max(8, vw - root.offsetWidth - 8);
     root.style.left = `${clamp(root.offsetLeft, 8, maxLeft)}px`;
     root.style.top = `${clamp(root.offsetTop, 8, Math.max(8, vh - root.offsetHeight - 8))}px`;
+    if (damageMounted) {
+      damageWindowPlace();
+      placeSimpleDamageWindow(playerDamageRoot, state.cfg.damageWindow.windows.players, 260, 0);
+      placeSimpleDamageWindow(enemyDamageRoot, state.cfg.damageWindow.windows.enemies, 0, 300);
+    }
     placeRecall();
   });
 }
@@ -2453,8 +3234,10 @@ function showOverlay() {
   scheduleRender('all');
   // the rAF queue needs one explicit kick: scheduleRender bails while paused
   requestAnimationFrame(() => { for (const k of ['status', 'spark', 'server', 'match', 'invite', 'perf', 'log', 'damage']) renderOnce(k); });
-  attachNet();
+  attachNetWhenReady();
   attachStore();
+  attachRunnerWhenReady();
+  attachDataWhenReady();
   pollHealthz();
   pollPlayers();
   applyTimers();
@@ -2475,8 +3258,23 @@ function renderOnce(what) {
 function hideOverlay() {
   if (!state.mounted) return;
   root.remove();
-  if (damageMounted) { damageRoot.remove(); damageMounted = false; }
+  if (damageMounted) {
+    damageRoot?.remove(); playerDamageRoot?.remove(); enemyDamageRoot?.remove();
+    damageMounted = false;
+  }
   state.mounted = false;
+  if (state._netRetry) {
+    globalThis.clearInterval(state._netRetry);
+    state._netRetry = null;
+  }
+  if (state._runnerRetry) {
+    globalThis.clearInterval(state._runnerRetry);
+    state._runnerRetry = null;
+  }
+  if (state._dataRetry) {
+    globalThis.clearInterval(state._dataRetry);
+    state._dataRetry = null;
+  }
   stopTimers();
   showRecall();
 }
