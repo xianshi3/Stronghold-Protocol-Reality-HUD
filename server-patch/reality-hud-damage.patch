@@ -12,8 +12,21 @@ index 0f37c3d0..54232018 100644
  `players[].bonds` = `ps.alive ? bondList(gd, ps.bondsView(), { off: offBondCounts(gd, ps) }) : []` — every bond with members, layers or an active tier
  (and, last, every bond the mode never activates that the player has members of: `{ bondId, count, active: false, tier: 0, layers, off: true }`,
  the strip's grey 本局禁用 disc — bondsMeta.offBondCounts, never in the battle input), the same list
+diff --git a/docs/SIM.md b/docs/SIM.md
+index 757c5d6d..8f936205 100644
+--- a/docs/SIM.md
++++ b/docs/SIM.md
+@@ -1435,7 +1435,7 @@ Unknown subprofessions fall back to the profession default (test `professions.te
+ - `drainEvents()` tuples: `['spawn', UnitInfo]` (first appearance), `['deploy', id]` (every (re)deploy and 【移动】 — the client plays the deploy and its interpolation snaps instead of sliding), `['atk', src, tgt, projKind]`
+   (`none|arrow|bolt|bomb|lob|orb|drone|enemy|boomerang|droneBomb|chain|chainHeal`; a boomerang's way back has no event — the
+   renderer flies it back to the thrower at `BOOMERANG_RETURN_SPEED`; an enemy's `profile.shot` may name another kind,
+-  e.g. `mortar` for 帝国炮火先兆者, which the renderer does not draw — its fx `bombardShell` is the shell), `['dmg', tgt, amount, type]` (`phys|arts|true|burn|neural|necrosis|apoptosis`),
++  e.g. `mortar` for 帝国炮火先兆者, which the renderer does not draw — its fx `bombardShell` is the shell), `['dmg', tgt, amount, type]` (`phys|arts|true|burn|neural|necrosis|apoptosis`; a hit credited to a unit appends that unit's id at index 5 — mark slot `'r'` at index 4 for a red number, else `null`, and a sourceless hit keeps the four-element shape — the Reality HUD damage patch, so per-operator / per-player damage accounting never guesses by `atk` order),
+   `['heal', tgt, amount]`, `['skill', id, 1|0]`, `['engage', id]` (an ally's first attack that hits an enemy — the client's
+   行动开始 voice, DESIGN §21.30), `['die', id, reason]`, `['leak', id]`, `['status', id, key, 1|0]`,
+   `['fx', kind, x, y, extra]` (`hitCap` `{ id, n }`: a leader's hit cancelled by 限伤 — the renderer draws nothing;
 diff --git a/docs/design/network.md b/docs/design/network.md
-index 47b1412f..490421d4 100644
+index 47b1412f..0739c69e 100644
 --- a/docs/design/network.md
 +++ b/docs/design/network.md
 @@ -24,7 +24,7 @@ selection/stamp rules live in design/client.md. In-flight protection requires th
@@ -25,6 +38,15 @@ index 47b1412f..490421d4 100644
  - `m.private` — the recipient's full PlayerState view (§6.2 minus server-only data) on every change; in a boss round's prep also `bossMate { playerId, side, units }` — the pair partner's board on its half of the boss field (UnitInfo, mirrored on the right half), re-sent when the partner moves (0.2.0, community report item 51).
  - `m.field` — field meta when watching starts: `{ fieldId, kind, rect, stageId, units: [UnitInfo], effects? }` (the units on the field, knocked-out operators waiting to redeploy included — `Battle.fieldMeta`, §18.3). The prep-scouting field (`Match.prepFieldMeta`) puts the scouted player's **hand (整备区) and 临时整备区 into `units` as well**: held pieces as units on the hand row (row 7, col = hand slot) and temp pieces on the temp row (row 8, cols 4..8 = the temp slots; PRTS 帮助 counts the temp area with the hand; a held item is a `kind: 'item'` unit the client draws as its floating plate) — the scout renders exactly like the own prep bench, for every watcher alike, the spectator seat's copy equal to a teammate's (§23.19's "never a private view" stays the no-`m.private` rule); the scout signature `_prepScoutSig` carries the hand / temp slots, so a piece moved to another slot is a change — and carries `effects`: the scouted player's effects view (策略 / 机变 / 悬赏 …), the watched player's effects column ready-made
  - NOTE: game time in `b.snap`/`b.ev` is carried as **`gt`** (the frame's `t` is the message type).
+@@ -38,7 +38,7 @@ S→C:
+   listed enemy's recovery was cut or ignored (失衡, fear, stun, hiding, leaving): an interval with a cut inside it stays
+   linear. A newest snapshot showing a death, a stun or a block is not extrapolated. Old snapshots without them
+   interpolate linearly; nothing is inferred from the attack animation.
+-- `b.ev` — `{ fieldId, ev: [ ... ] }` event tuples: `['spawn', UnitInfo]`, `['atk', srcId, tgtId, projKind]`, `['dmg', tgtId, amount, type]`, `['heal', tgtId, amount]`, `['skill', id, on:0|1]`, `['die', id, reason]` (reason `'killed'`, `'retreat'`, `'expired'` …; only `'killed'` plays an operator's knock-down sound), `['status', id, key, on]`, `['fx', kind, x, y, extra]` (`'hitCap' {id, n}` = a cancelled 限伤 hit, drawn as nothing, §20.12; `extra.form` = the unit's model form from then on (an enemy's mode, a 傀儡师's 替身 §22.11) — `shared/protocol.js fxForm`, state like a spawn: never dropped by the client, §21.4), `['layer', playerId, bondId, n]`, `['bounty', playerId, coins]`, `['deploy', id]`
++- `b.ev` — `{ fieldId, ev: [ ... ] }` event tuples: `['spawn', UnitInfo]`, `['atk', srcId, tgtId, projKind]`, `['dmg', tgtId, amount, type]` (index 4 `'r'` = the official red number, docs/design/client.md; a hit credited to a unit appends that unit's id at index 5 — mark slot `null` at 4 when the hit is not red — so damage accounting by operator / by player pins every hit to its attacker instead of guessing by `atk` order; a sourceless hit keeps the four-element shape — the Reality HUD damage patch), `['heal', tgtId, amount]`, `['skill', id, on:0|1]`, `['die', id, reason]` (reason `'killed'`, `'retreat'`, `'expired'` …; only `'killed'` plays an operator's knock-down sound), `['status', id, key, on]`, `['fx', kind, x, y, extra]` (`'hitCap' {id, n}` = a cancelled 限伤 hit, drawn as nothing, §20.12; `extra.form` = the unit's model form from then on (an enemy's mode, a 傀儡师's 替身 §22.11) — `shared/protocol.js fxForm`, state like a spawn: never dropped by the client, §21.4), `['layer', playerId, bondId, n]`, `['bounty', playerId, coins]`, `['deploy', id]`
+ - `m.toast {kind, text}` · `m.ticker {text, id, type, priority, playerId}` (the strip plays the highest priority first, §21.10) · `m.emote {playerId, id}` · `m.result {...}`
+ - `m.layer {playerId, bondId, add}` — a positive prep layer gain, sent only to that player in ROUND_START / SP_DRAFT /
+   PREP for audio feedback. No replay on reconnect/resync and no settlement backfill; battle audio uses `layer` tuples
 diff --git a/server/match/PlayerState.js b/server/match/PlayerState.js
 index 1445a497..7ea8b625 100644
 --- a/server/match/PlayerState.js
@@ -123,6 +145,38 @@ index 6539f417..fd6fd0b4 100644
    /** nextEnemies preview for m.private. */
    nextEnemiesFor(ps) {
      if (!ps.alive) return [];
+diff --git a/server/sim/damage.js b/server/sim/damage.js
+index a4b27420..65f04bb6 100644
+--- a/server/sim/damage.js
++++ b/server/sim/damage.js
+@@ -425,7 +425,13 @@ export function applyHpLoss(battle, source, target, amount, dmg, mark) {
+     const shown = dmg.type === 'element' ? dmg.element : dmg.type === 'elemental' ? (dmg.element || 'true') : dmg.type;
+     // 'r' is display-only (official red number). Absent on every other hit, so the tuple stays four elements.
+     const ev = ['dmg', target.id, Math.round(amount), shown];
+-    if (mark === 'r') ev.push('r');
++    // The credited attacker (the unit the match's 造成伤害 credits, `sourceless` hooks or not) appends its unit id
++    // at index 5, keeping the mark at index 4 (null when this hit is not red; a sourceless hit keeps the shorter
++    // shape). This is what pins every hit to its operator for per-operator / per-player damage accounting (the
++    // Reality HUD damage patch): without it, consumers can only guess by attack order, and a melee hit landing
++    // between a ranged shot and its projectile swaps the two operators' damage.
++    if (mark === 'r' || (source && source.id != null)) ev.push(mark === 'r' ? 'r' : null);
++    if (source && source.id != null) ev.push(source.id);
+     battle._ev(ev);
+   }
+   if (battle._hooks.damaged) battle.emit('damaged', { source: hs, target, amount, type: dmg ? dmg.type : 'true', dmg, credit: source });
+@@ -509,7 +515,11 @@ export function applyElement(battle, source, target, dmg) {
+   let amt = dmg.amount * dmg.mul * elementIntake(target);
+   if (!(amt > 0) || !Number.isFinite(amt)) return 0;
+   target.elem[el] = Math.min(max, target.elem[el] + amt);
+-  battle._ev(['dmg', target.id, Math.round(amt), el]);
++  // Same attribution contract as the HP event above: a sourced gauge fill appends its attacker at index 5
++  // (mark slot null — an element fill is never a red number).
++  battle._ev(source && source.id != null
++    ? ['dmg', target.id, Math.round(amt), el, null, source.id]
++    : ['dmg', target.id, Math.round(amt), el]);
+   if (source) source.stats.elem = (source.stats.elem ?? 0) + amt;
+   if (battle._hooks.damaged) battle.emit('damaged', { source, target, amount: amt, type: 'element', dmg });
+   if (target.elem[el] >= max && target.alive) elementBurst(battle, source, target, el);
 diff --git a/test/match/reality-hud-damage.test.js b/test/match/reality-hud-damage.test.js
 new file mode 100644
 index 00000000..341e4122
@@ -300,4 +354,118 @@ index 00000000..341e4122
 +  assert.equal(ps0.hudDmg, 700);
 +  assert.equal(ps1.hudDmg, 900);
 +  m.dispose();
++});
+diff --git a/test/sim/battle.test.js b/test/sim/battle.test.js
+index 0edbcd3d..4f2d6ae5 100644
+--- a/test/sim/battle.test.js
++++ b/test/sim/battle.test.js
+@@ -381,7 +381,11 @@ test('snapshot / event wire format (DESIGN §8.2)', () => {
+   const atk = allEv.find((e) => e[0] === 'atk');
+   assert.equal(atk.length, 4);
+   const dmg = allEv.find((e) => e[0] === 'dmg');
+-  assert.equal(dmg.length, 4);
++  // a credited hit appends its attacker's unit id at index 5 (mark slot at 4, null when not red; a sourceless
++  // hit keeps the four-element shape) — the Reality HUD damage patch's attribution slot
++  assert.equal(dmg.length, 6, 'the attacker id follows the mark slot');
++  assert.ok(dmg[4] === null || dmg[4] === 'r', 'index 4 is the mark slot');
++  assert.ok(Number.isInteger(dmg[5]) && allEv.some((e) => e[0] === 'spawn' && e[1].id === dmg[5]), 'index 5 names a spawned unit');
+   assert.ok(['phys', 'arts', 'true', 'burn', 'neural', 'necrosis', 'apoptosis'].includes(dmg[3]));
+   const flyInSnap = h.b.units.find((u) => u.defId === 'enemy_fly');
+   if (flyInSnap.alive) assert.ok(snap.units.find((u) => u[0] === flyInSnap.id)[7] & UF.FLYING);
+diff --git a/test/sim/damage-attribution.test.js b/test/sim/damage-attribution.test.js
+new file mode 100644
+index 00000000..60f7910f
+--- /dev/null
++++ b/test/sim/damage-attribution.test.js
+@@ -0,0 +1,91 @@
++// The 'dmg' tuple's attribution slot (Reality HUD damage patch, 1.7.1): a hit credited to a unit appends that
++// unit's id at index 5 — the mark slot stays at index 4, `null` when the hit is not a red number — so
++// per-operator / per-player damage accounting can pin every hit to its attacker instead of guessing by `atk`
++// order. The guess is what this replaces: a melee hit landing between a ranged shot and its projectile popped
++// the ranged operator's pending attack, and the projectile later popped the melee one — the two operators'
++// damage swapped (and with two players' units on one field, so did the players' rows).
++// A sourceless hit keeps the four-element shape (nothing to attribute); index 4 ('r', the official red number)
++// keeps its meaning and its tests (official-damage-numbers.test.js).
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { makeBattle, chessRec, enemyRec } from '../helpers/battleHarness.js';
++
++function field() {
++  const h = makeBattle({
++    defs: {
++      chess: {
++        t_a: chessRec({ id: 't_a', stats: { atk: 1000 } }),
++        t_b: chessRec({ id: 't_b', stats: { atk: 1000 } }),
++      },
++      enemies: { enemy_dummy: enemyRec({ key: 'enemy_dummy', hp: 100000, def: 400, res: 0, speed: 0 }) },
++    },
++    units: [{ chessId: 't_a', row: 9, col: 3 }, { chessId: 't_b', row: 9, col: 5 }],
++    enemies: [{ key: 'enemy_dummy', pos: [11, 8] }],
++    content: 'none',
++  });
++  h.step();
++  return h;
++}
++
++function added(h, kind, fn) {
++  const before = h.eventsOf(kind).length;
++  const result = fn();
++  return { result, ev: h.eventsOf(kind).slice(before) };
++}
++
++test('a credited hit carries its attacker id at index 5 (mark slot null unless red)', () => {
++  const h = field();
++  const e = h.enemy('enemy_dummy');
++  const op = h.unit('t_a');
++
++  const plain = added(h, 'dmg', () => h.b.dealDamage(op, e, { amount: 100, type: 'true' }));
++  assert.equal(plain.result, 100);
++  assert.deepEqual(plain.ev[0], ['dmg', e.id, 100, 'true', null, op.id], 'mark slot stays at 4 (null), the attacker id follows');
++
++  h.b.addBuff(op, { key: 'dealt', mods: { dmgDealtMul: 2 } });
++  const red = added(h, 'dmg', () => h.b.dealDamage(op, e, { amount: 100, type: 'true' }));
++  assert.equal(red.result, 200);
++  assert.deepEqual(red.ev[0], ['dmg', e.id, 200, 'true', 'r', op.id], 'a red hit keeps the mark at 4 and the id at 5');
++  h.b.removeBuff(op, op.findBuff('dealt'));
++
++  // 无来源 (`sourceless`): the hooks see no source but the match still credits this unit — the tuple tags it,
++  // exactly like applyHpLoss's own `pp.damageDealt` accounting.
++  const credited = added(h, 'dmg', () => h.b.dealDamage(op, e, { amount: 100, type: 'true', sourceless: true }));
++  assert.equal(credited.result, 100);
++  assert.deepEqual(credited.ev[0], ['dmg', e.id, 100, 'true', null, op.id], 'sourceless hooks do not drop the credited source from the tuple');
++
++  const none = added(h, 'dmg', () => h.b.dealDamage(null, e, { amount: 100, type: 'true' }));
++  assert.deepEqual(none.ev[0], ['dmg', e.id, 100, 'true'], 'a truly sourceless hit keeps the four-element shape');
++});
++
++test('two attackers on one enemy keep their own ids, whatever the order their hits land in', () => {
++  const h = field();
++  const e = h.enemy('enemy_dummy');
++  const a = h.unit('t_a');
++  const b = h.unit('t_b');
++
++  // The regression order: A attacks (its rarer projectile still in flight), B's melee hit lands first, then A's.
++  // Under attack-order guessing B's hit popped A's pending attack and A's hit popped B's — the two swapped.
++  const bHit = added(h, 'dmg', () => h.b.dealDamage(b, e, { amount: 300, type: 'phys', defIgnorePct: 1 }));
++  const aHit = added(h, 'dmg', () => h.b.dealDamage(a, e, { amount: 100, type: 'arts' }));
++  assert.equal(bHit.ev[0][5], b.id);
++  assert.equal(aHit.ev[0][5], a.id);
++  // the penetration makes B's hit a red number: the mark and the source id coexist ('r' at 4, id at 5)
++  assert.deepEqual(bHit.ev[0], ['dmg', e.id, 300, 'phys', 'r', b.id]);
++  assert.deepEqual(aHit.ev[0], ['dmg', e.id, 100, 'arts', null, a.id]);
++});
++
++test('element gauge fills tag their source the same way; sourceless fills stay four elements', () => {
++  const h = field();
++  const e = h.enemy('enemy_dummy');
++  const op = h.unit('t_a');
++
++  const bare = added(h, 'dmg', () => h.b.dealDamage(null, e, { amount: 80, type: 'element', element: 'burn' }));
++  assert.equal(bare.ev.length, 1);
++  assert.equal(bare.ev[0].length, 4, 'a sourceless gauge fill is not attributable');
++  assert.equal(bare.ev[0][3], 'burn');
++
++  const filled = added(h, 'dmg', () => h.b.dealDamage(op, e, { amount: 80, type: 'element', element: 'burn' }));
++  assert.equal(filled.ev.length, 1);
++  assert.deepEqual(filled.ev[0], ['dmg', e.id, 80, 'burn', null, op.id], 'the gauge fill names the unit that fed it');
 +});

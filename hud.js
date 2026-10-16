@@ -1028,15 +1028,23 @@ function parseDamageEvent(event, frame = {}) {
       return;
     }
     if (kind === 'dmg' || kind === 'damage' || kind === 'hit') {
-      // Canonical sim tuples are [dmg, target, amount, type, mark]. Newer
-      // frames append the authoritative source id at index 5 so projectile
-      // arrival order can never swap two operators' damage.
+      // Canonical sim tuples are [dmg, target, amount, type, mark]. A patched sim appends the
+      // credited attacker's unit id at index 5 (mark slot null at 4 when the hit is not red): the
+      // hit is pinned to its own operator — and, together with the unit's ownerId, to its own
+      // player — so attack-order guessing (the attackSources queue, which a melee hit landing
+      // between a ranged shot and its projectile swaps between the two) only stands in for
+      // vanilla frames. A TAGGED hit with a null id is genuinely sourceless: it must not consume
+      // a queued attack of a later vanilla frame either.
       const legacySourceFirst = event.length === 5 && Number.isFinite(Number(event[3])) && event[4] !== 'r';
-      const sourceId = event.length >= 6 ? event[5] : (legacySourceFirst ? event[1] : null);
+      const tagged = event.length >= 6;
+      const sourceId = tagged ? event[5] : (legacySourceFirst ? event[1] : null);
       const targetId = legacySourceFirst ? event[2] : event[1];
       const amount = legacySourceFirst ? event[3] : event[2];
       const type = legacySourceFirst ? event[4] : event[3];
-      recordDamage(sourceForDamage(sourceId, targetId), amount, type, targetId);
+      const source = tagged
+        ? (sourceId == null ? null : sourceForDamage(sourceId, targetId))
+        : sourceForDamage(null, targetId);
+      recordDamage(source, amount, type, targetId);
       return;
     }
     if (kind === 'status' || kind === 'buff' || kind === 'debuff' || kind === 'effect') {

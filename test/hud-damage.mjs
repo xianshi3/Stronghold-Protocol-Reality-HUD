@@ -9,6 +9,10 @@
 //   * a hudDmg flagged `settled` (1.7.1) is the round's complete credited value: it SNAPS the row to it
 //     in either direction — the local live count is a raw-hit estimate (overkill, element gauge ticks,
 //     rounding) and used to keep its own 本回合 number while every teammate saw the server's.
+//   * a hit TAGGED with its attacker at index 5 (1.7.1 — a sim with the Reality HUD damage patch) is
+//     credited to that operator / that player directly: with a teammate's unit on the same field, the
+//     old attack-order pairing (the attackSources queue) swapped the two rows — 「我打的伤害显示的是
+//     别人的名字」. Order guessing only stands in for vanilla frames.
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -303,6 +307,50 @@ await wait();
 rows = await playerRows();
 check("无 settled 的实时帧只上不下（40 保持、累计随实时增量到 420，25 被忽略）",
   rowFor(rows, "玩家一")[1] === "40" && rowFor(rows, "玩家一")[2] === "420", JSON.stringify(rows));
+
+// ---- exact attribution: a sim patch tags every hit with its attacker (1.7.1) --------------------
+// The live count used to pair hits with `atk` events by order (attackSources). A melee hit landing
+// between a ranged shot and its projectile popped the ranged operator's pending entry, and the
+// projectile later popped the melee one: the two operators' numbers swapped — and with a teammate's
+// unit on the same field (联防 / Boss 配对), so did the two players' rows. A patched sim appends the
+// credited attacker's unit id at index 5: the row follows that id, never the queue.
+await emit({ t: "m.public", round: 7, phase: "COMBAT", lastRound: 14, players: [
+  { playerId: "p1", name: "玩家一" },
+  { playerId: "p2", name: "队友" },
+] });
+await emit({ t: "m.field", units: [
+  { id: "op_1", uid: "u1", name: "测试干员", kind: "op", side: "ally", ownerId: "p1" },
+  { id: "op_2", uid: "u2", name: "近战干员", kind: "op", side: "ally", ownerId: "p1" },
+  { id: "op_3", uid: "u3", name: "队友干员", kind: "op", side: "ally", ownerId: "p2" },
+  { id: "enemy_1", name: "敌人", kind: "enemy", side: "enemy" },
+] });
+await emit({ t: "b.ev", ev: [
+  ["atk", "op_1", "enemy_1", "arrow"],           // 远程：弹道在飞
+  ["atk", "op_2", "enemy_1", "none"],            // 近战插队：伤害先落地
+  ["dmg", "enemy_1", 300, "phys", null, "op_2"],
+  ["atk", "op_3", "enemy_1", "none"],            // 队友干员也打同一目标
+  ["dmg", "enemy_1", 200, "arts", null, "op_3"],
+  ["dmg", "enemy_1", 100, "phys", null, "op_1"], // 弹道命中
+] });
+await wait();
+let ops7 = await operatorRows();
+check("带来源的命中各归各：远程 100、近战 300、队友干员 200",
+  rowFor(ops7, "测试干员")?.[1] === "100" && rowFor(ops7, "近战干员")?.[1] === "300" && rowFor(ops7, "队友干员")?.[1] === "200",
+  JSON.stringify(ops7));
+rows = await playerRows();
+check("跨玩家不串行：玩家一 400（100+300）、队友 200（队友干员的 200）",
+  rowFor(rows, "玩家一")[1] === "400" && rowFor(rows, "队友")[1] === "200", JSON.stringify(rows));
+// a TAGGED hit with a null id is sourceless: it must go to 未归属, never eat a queued attack —
+// otherwise the next vanilla frame's hit would lose its pairing
+await emit({ t: "b.ev", ev: [
+  ["atk", "op_2", "enemy_1", "none"],
+  ["dmg", "enemy_1", 50, "true", null, null],   // 带标记的空来源：不进队列
+  ["dmg", "enemy_1", 25, "phys"],               // 无标记帧：仍与上面那次 atk 配对
+] });
+await wait();
+ops7 = await operatorRows();
+check("带标记的空来源不吃队列（近战 300+25=325）",
+  rowFor(ops7, "近战干员")?.[1] === "325", JSON.stringify(ops7));
 
 // ---- the menu row opens the page -------------------------------------------------------------
 await page.click("#rh-page-damage .rh-back");
