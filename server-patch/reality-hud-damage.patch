@@ -1,0 +1,249 @@
+diff --git a/docs/META.md b/docs/META.md
+index 0f37c3d0..404b68b7 100644
+--- a/docs/META.md
++++ b/docs/META.md
+@@ -791,6 +791,9 @@ drawn set; `disabledBonds` = drawn ∪ the mode's static list), `hiddenBossId`,
+ `combatMode` (`'client'` | `'server'`), `fields[].progress { killed, total, done }` (teammates' progress UI), `paused`
+ (solo pause, §1.3a),
+ `players[].autoplay`, `players[].uniteLeft` (UNITE, leakers only: their enemies still standing, uncapped — §4),
++`players[].hudDmg { round, dmg, total }` (the Reality HUD damage patch, `server-patch/reality-hud-damage.patch`:
++the player's damage of round `round` — stamped at settlement, refreshed from a live boss field's own share at the
++m.public cadence — and the match's cumulative; an extra field vanilla clients ignore — DESIGN network.md),
+ `players[].bonds` = `ps.alive ? bondList(gd, ps.bondsView(), { off: offBondCounts(gd, ps) }) : []` — every bond with members, layers or an active tier
+ (and, last, every bond the mode never activates that the player has members of: `{ bondId, count, active: false, tier: 0, layers, off: true }`,
+ the strip's grey 本局禁用 disc — bondsMeta.offBondCounts, never in the battle input), the same list
+diff --git a/docs/design/network.md b/docs/design/network.md
+index 47b1412f..7478fe36 100644
+--- a/docs/design/network.md
++++ b/docs/design/network.md
+@@ -24,7 +24,7 @@ selection/stamp rules live in design/client.md. In-flight protection requires th
+ ### 8.2 Match
+ C→S (all carry `rid`): `g.infoReady {setupRevision?}` · `g.band {bandId}` · `g.bandSkip` · `g.bandFocus {bandId?}` (the strategy highlighted in the draft screen — what a timed-out turn takes; absent / null clears it; `WRONG_PHASE` outside BAND_DRAFT, `ALREADY` after the pick, `BAD_TARGET` for a band not allowed; §18.2) · `g.buy {slot}` · `g.refresh` · `g.freeze` · `g.levelUp` · `g.sell {uid}` · `g.move {uid, to:{area:'board', row, col}|{area:'hand', idx}, dir?}` · `g.equip {itemUid, targetUid, replaceUid?}` (`replaceUid`: which equipped item a third one replaces, §6.2) · `g.art {itemUid, row, col, dir?}` (`dir` ∈ UP|RIGHT|DOWN|LEFT from the deploy wheel, §3; absent ⇒ `to.dir`, then RIGHT; `g.move` onto the piece's own tile re-orients it; board pieces in `m.private` / `m.field {prep:true}` carry `dir`) · `g.destroy {uid}` (hand / temp items only; equipped items are locked, §6.2) · `g.reward {idx}` · `g.choice {idx, choiceId?}` (with an ID: the recipient's PREP personal choice; without one: the public SP_DRAFT; stale or wrong IDs never fall through to the public draft) · `g.ready {ready}` · `g.emote {id}` · `g.watch {fieldId, playerId?}` (`playerId`: the player tapped — a shared 联防 / boss pair field shows two; what an eliminated viewer follows, §25) · `g.autoplay {on}` · `g.pause {on}` (solo battles only, §14 Solo pause) · `g.unitStats {seq?}` (ROUND_START / SP_DRAFT / PREP, else `WRONG_PHASE`; eliminated: `ELIMINATED`) → push `m.unitStats` (§18.5) · `g.leave`
+ S→C:
+-- `m.public` — full public state on every change (throttled ≤ 10/s): `{ phase, round, lastRound, deadline, serverNow, modeId, difficulty, stageId, factions, disabledBonds, bannedChess, bossId, hiddenBossId?, teamLp?, bossHp?:{hp,max}, overtimeAt? /* FA / HC: ms epoch the overtime drain starts, §4 */, paused /* solo pause, §14 */, draft?:{order,turn,picks,skipsLeft,turnDeadline,turnSeconds /* one turn's length, 0 untimed; deadline = turnDeadline (§18.2) */,untimed}, sp?:{family,cards /* bounty cards carry descRaw?, §20.6 */,turn,picks}, players:[{playerId, seat, name, isBot, connected, alive, lp, bandId, shopLevel, boardCount, ready, bonds:[{bondId,count,active,tier,layers,harmony? /* 调和's +1 is in count, §21.26 */}], fieldId, status, pendingLp? /* COMBAT / 联防 of a normal round: the LP the player's own battle will cost at settlement so far, min(lpCapPerRound, counted leaks) — in 联防 min(lpCapPerRound, uniteLeft) — omitted when 0 and in every other phase (§17.5 live LP) */, uniteLeft? /* 联防: the leaker's enemies still standing — not spawned yet + alive + counted leaks, uncapped, live (§20.6) */}] , fields:[{fieldId, kind, players:[playerId...], progress?:{killed, resolved, total, done} /* §14 顶栏胶囊: resolved = the field's own scheduled enemies knocked down or leaked, null while unknown */}] }` · `m.public.uniteResult` — SETTLE after a 联防 only, its outcome as data: `{ through /* the leakers' enemies that still got through, uncapped */, helpers:[playerId...], leakers:[playerId...], losses:{playerId: the LP settlement charged this round — every alive player} }`; absent when no 联防 resolved (the client's result box then reads the round's own battle; GitHub #235, PR #112)
++- `m.public` — full public state on every change (throttled ≤ 10/s): `{ phase, round, lastRound, deadline, serverNow, modeId, difficulty, stageId, factions, disabledBonds, bannedChess, bossId, hiddenBossId?, teamLp?, bossHp?:{hp,max}, overtimeAt? /* FA / HC: ms epoch the overtime drain starts, §4 */, paused /* solo pause, §14 */, draft?:{order,turn,picks,skipsLeft,turnDeadline,turnSeconds /* one turn's length, 0 untimed; deadline = turnDeadline (§18.2) */,untimed}, sp?:{family,cards /* bounty cards carry descRaw?, §20.6 */,turn,picks}, players:[{playerId, seat, name, isBot, connected, alive, lp, bandId, shopLevel, boardCount, ready, bonds:[{bondId,count,active,tier,layers,harmony? /* 调和's +1 is in count, §21.26 */}], fieldId, status, pendingLp? /* COMBAT / 联防 of a normal round: the LP the player's own battle will cost at settlement so far, min(lpCapPerRound, counted leaks) — in 联防 min(lpCapPerRound, uniteLeft) — omitted when 0 and in every other phase (§17.5 live LP) */, uniteLeft? /* 联防: the leaker's enemies still standing — not spawned yet + alive + counted leaks, uncapped, live (§20.6) */, hudDmg?:{round, dmg, total} /* Reality HUD damage patch (`server-patch/reality-hud-damage.patch`): `dmg` = this player's damage of round `round` (a settled round's credit plus a live boss field's own share), `total` = the match's cumulative — an extra field vanilla clients ignore */}] , fields:[{fieldId, kind, players:[playerId...], progress?:{killed, resolved, total, done} /* §14 顶栏胶囊: resolved = the field's own scheduled enemies knocked down or leaked, null while unknown */}] }` · `m.public.uniteResult` — SETTLE after a 联防 only, its outcome as data: `{ through /* the leakers' enemies that still got through, uncapped */, helpers:[playerId...], leakers:[playerId...], losses:{playerId: the LP settlement charged this round — every alive player} }`; absent when no 联防 resolved (the client's result box then reads the round's own battle; GitHub #235, PR #112). **Reality HUD damage patch** (an optional server-side extension, `server-patch/reality-hud-damage.patch` in the Reality HUD repo): every player row carries `hudDmg { round, dmg, total }`, stamped with the round the damage belongs to — a normal round stamps the damage its settlement credits (`MatchSettle.settle`), a boss round refreshes it at the ~1 Hz m.public cadence from the live `f.bossBy` share of a still-running boss field (`MatchViews._hudDmgView`; the final result moves that share into `stats.dmgDealt`, which `total` already counted without double-counting the live part) — so a frame still in flight when the round advances never lands in the next round's damage, and teammates' damage is visible without waiting for `m.result`.
+ - `m.private` — the recipient's full PlayerState view (§6.2 minus server-only data) on every change; in a boss round's prep also `bossMate { playerId, side, units }` — the pair partner's board on its half of the boss field (UnitInfo, mirrored on the right half), re-sent when the partner moves (0.2.0, community report item 51).
+ - `m.field` — field meta when watching starts: `{ fieldId, kind, rect, stageId, units: [UnitInfo], effects? }` (the units on the field, knocked-out operators waiting to redeploy included — `Battle.fieldMeta`, §18.3). The prep-scouting field (`Match.prepFieldMeta`) puts the scouted player's **hand (整备区) and 临时整备区 into `units` as well**: held pieces as units on the hand row (row 7, col = hand slot) and temp pieces on the temp row (row 8, cols 4..8 = the temp slots; PRTS 帮助 counts the temp area with the hand; a held item is a `kind: 'item'` unit the client draws as its floating plate) — the scout renders exactly like the own prep bench, for every watcher alike, the spectator seat's copy equal to a teammate's (§23.19's "never a private view" stays the no-`m.private` rule); the scout signature `_prepScoutSig` carries the hand / temp slots, so a piece moved to another slot is a change — and carries `effects`: the scouted player's effects view (策略 / 机变 / 悬赏 …), the watched player's effects column ready-made
+ - NOTE: game time in `b.snap`/`b.ev` is carried as **`gt`** (the frame's `t` is the message type).
+diff --git a/server/match/PlayerState.js b/server/match/PlayerState.js
+index 1445a497..7ea8b625 100644
+--- a/server/match/PlayerState.js
++++ b/server/match/PlayerState.js
+@@ -229,6 +229,12 @@ export class PlayerState {
+       dmgDealt: 0, kills: 0, leaks: 0, gold: 0, refreshes: 0, merges: 0, itemMerges: 0, itemsEquipped: 0,
+       bossDamage: 0, lpLost: 0, buys: 0, sells: 0, perfectRounds: 0, fundsGained: 0, healing: 0,
+     };
++    /**
++     * Reality HUD damage patch (server-patch/reality-hud-damage.patch): the damage credited in round `hudRound`,
++     * stamped when a round settles / a boss battle is credited — m.public players[].hudDmg._hudDmgView (views.js)
++     */
++    this.hudRound = 0;
++    this.hudDmg = 0;
+     this.eliminatedRound = null;
+     this.lpAtFinal = null;
+     /** last combat result for this player (unite carry state, bounties) */
+diff --git a/server/match/match/bossRounds.js b/server/match/match/bossRounds.js
+index bb5d12ee..b8b1d244 100644
+--- a/server/match/match/bossRounds.js
++++ b/server/match/match/bossRounds.js
+@@ -524,6 +524,8 @@ export class MatchBoss {
+         if (pp && ps) {
+           ps.stats.dmgDealt += Number(pp.damageDealt) || 0;
+           ps.stats.kills += Number(pp.killed) || 0;
++          // Reality HUD damage patch: the boss damage just moved from f.bossBy into stats — stamp it as this round's
++          this._hudCreditDmg(ps, Number(pp.damageDealt) || 0);
+           ps.dirty(); // m.private.stats
+           this._charDamageTickers(ps, pp);
+         }
+diff --git a/server/match/match/settle.js b/server/match/match/settle.js
+index 0627f5d9..a57e8466 100644
+--- a/server/match/match/settle.js
++++ b/server/match/match/settle.js
+@@ -54,6 +54,8 @@ export class MatchSettle {
+         ps.stats.dmgDealt += Number(up.damageDealt) || 0;
+         ps.stats.kills += Number(up.killed) || 0;
+       }
++      // Reality HUD damage patch: this round's credited damage, stamped with the round, for the teammates' 玩家 table
++      this._hudCreditDmg(ps, (Number(r.damageDealt) || 0) + (up ? Number(up.damageDealt) || 0 : 0));
+       // perfect-payout bounties (战术特训): own phase perfect
+       for (const b of ps.bounties) if (b.card.payout === 'perfect' && counted === 0 && r.perfect !== false) coins += b.card.coin;
+       if (coins > 0) { ps.pendingFunds += coins; ps.stats.fundsGained += coins; }
+diff --git a/server/match/match/views.js b/server/match/match/views.js
+index 6539f417..47310f0d 100644
+--- a/server/match/match/views.js
++++ b/server/match/match/views.js
+@@ -116,6 +116,9 @@ export class MatchViews {
+         autoplay: ps.autoplay,
+         // the LP this round's own battle will cost at settlement so far (COMBAT / 联防 only, omitted when 0)
+         ...this._pendingLpView(ps),
++        // the Reality HUD damage patch (server-patch/reality-hud-damage.patch): this player's damage of this round
++        // and the match's cumulative — an extra field vanilla clients ignore
++        hudDmg: this._hudDmgView(ps),
+       })),
+       fields: this.fields.map((f) => {
+         const v = { fieldId: f.fieldId, kind: f.kind, players: f.players.slice(), live: !!f.live };
+@@ -226,6 +229,34 @@ export class MatchViews {
+     return loss > 0 ? { pendingLp: loss } : {};
+   }
+ 
++  /**
++   * Reality HUD damage patch (server-patch/reality-hud-damage.patch): one player's damage as the HUD's 玩家 table
++   * reads it — `{ round, dmg, total }`. `dmg` belongs to round `round` (stamped by _hudCreditDmg when a normal
++   * round settles / a boss battle is credited, so a frame still in flight when the round advances never lands in
++   * the next round's 本回合); `total` is the match's cumulative: everything already settled into
++   * `ps.stats.dmgDealt` plus a still-live boss field's own share, which `_finishFinal` credits later (never both).
++   * An extra field of m.public.players[] that vanilla clients ignore.
++   */
++  _hudDmgView(ps) {
++    let live = 0;
++    for (const f of this.fields) {
++      if (!f.cc || f.done || !f.live || (f.kind !== 'boss' && f.kind !== 'hidden')) continue;
++      live += Math.max(0, Number(f.bossBy && f.bossBy[ps.playerId]) || 0);
++    }
++    const round = ps.hudRound === this.round ? Math.max(0, Number(ps.hudDmg) || 0) : 0;
++    return {
++      round: this.round,
++      dmg: Math.round(round + live),
++      total: Math.max(0, Math.round((Number(ps.stats && ps.stats.dmgDealt) || 0) + live)),
++    };
++  }
++
++  /** Reality HUD damage patch: stamp `d` as the damage `ps` credited in this round (settle.js / bossRounds.js). */
++  _hudCreditDmg(ps, d) {
++    ps.hudRound = this.round;
++    ps.hudDmg = Math.max(0, Number(d) || 0);
++  }
++
+   /** nextEnemies preview for m.private. */
+   nextEnemiesFor(ps) {
+     if (!ps.alive) return [];
+diff --git a/test/match/reality-hud-damage.test.js b/test/match/reality-hud-damage.test.js
+new file mode 100644
+index 00000000..26bec0c8
+--- /dev/null
++++ b/test/match/reality-hud-damage.test.js
+@@ -0,0 +1,124 @@
++// test/match/reality-hud-damage.test.js — the Reality HUD damage patch's server half
++// (Stronghold-Protocol-Reality-HUD `server-patch/reality-hud-damage.patch`): every m.public player row carries
++//   hudDmg { round, dmg, total } — `dmg` is the damage of round `round` (a normal round stamps the damage its
++//   settlement credits, MatchSettle.settle; a boss round refreshes it at the ~1 Hz m.public cadence from a live
++//   client-run field's own f.bossBy share) and `total` is the match's cumulative (settled stats plus a live boss
++//   field's own share — never both, _finishFinal moves the share into stats exactly once).
++// The round stamp is what keeps a frame still in flight when the round advances out of 本回合 (the teammate sees 0
++// for the new round instead of the old round's number); a vanilla client ignores the extra field.
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { makeMatch } from './harness.js';
++import { MatchViews } from '../../server/match/match/views.js';
++import { PHASE } from '../../shared/constants.js';
++
++/** _hudDmgView bound to a stub `this`: the method reads only `this.round` / `this.fields`. */
++const viewOf = (round, fields, ps) => MatchViews.prototype._hudDmgView.call({ round, fields }, ps);
++/** The player's hudDmg row out of the live m.public view. */
++const rowOf = (m, pid) => m.publicView().players.find((p) => p.playerId === pid).hudDmg;
++/** A PlayerState stub with the fields _hudDmgView reads. */
++const psStub = (o = {}) => ({ playerId: 'p_0', hudRound: 0, hudDmg: 0, stats: { dmgDealt: 0 }, ...o });
++/** A client-run field stub: only a live boss / hidden field carries a pool share the view may add. */
++const field = (bossBy, { kind = 'boss', live = true, done = false, cc = true } = {}) => ({ kind, cc, live, done, bossBy });
++
++test('hudDmg view: the round stamp zeroes an older round; a live boss field adds its share once', () => {
++  // nothing credited yet
++  assert.deepEqual(viewOf(3, [], psStub()), { round: 3, dmg: 0, total: 0 });
++  // this round credited 420: 本回合 420, 全局 = the settled cumulative
++  assert.deepEqual(viewOf(3, [], psStub({ hudRound: 3, hudDmg: 420, stats: { dmgDealt: 1000 } })), { round: 3, dmg: 420, total: 1000 });
++  // the round advanced while the frame is in flight: round 3's number never shows up in round 4
++  assert.deepEqual(viewOf(4, [], psStub({ hudRound: 3, hudDmg: 420, stats: { dmgDealt: 1000 } })), { round: 4, dmg: 0, total: 1000 });
++  // a live boss field's own share counts in both columns — the finished field is in stats already (never both),
++  // a normal field carries no pool share, and a server-run (non-client) field has none to read
++  const fields = [
++    field({ p_0: 300 }),
++    field({ p_0: 120 }, { kind: 'hidden' }),
++    field({ p_0: 999 }, { live: false, done: true }),
++    field({ p_0: 777 }, { kind: 'normal' }),
++    field({ p_0: 555 }, { cc: false }),
++  ];
++  assert.deepEqual(viewOf(9, fields, psStub({ hudRound: 8, hudDmg: 500, stats: { dmgDealt: 1000 } })),
++    { round: 9, dmg: 420, total: 1420 });
++  // and a live share of a round already credited adds on top (a normal round's battle still running is impossible;
++  // this is the shape mid-round of a boss round that had its settlement stamped)
++  assert.deepEqual(viewOf(9, [field({ p_0: 80 })], psStub({ hudRound: 9, hudDmg: 500, stats: { dmgDealt: 1500 } })),
++    { round: 9, dmg: 580, total: 1580 });
++  // garbage never reaches the wire (negative / missing numbers)
++  assert.deepEqual(viewOf(9, [field({ p_0: -5 })], psStub({ hudRound: 9, hudDmg: -3, stats: { dmgDealt: -1 } })),
++    { round: 9, dmg: 0, total: 0 });
++  assert.deepEqual(viewOf(9, [], { playerId: 'p_0', hudRound: 9, hudDmg: 4 }), { round: 9, dmg: 4, total: 0 });
++});
++
++test('hudDmg: a normal round stamps its settlement; the next round reads 0 until it settles', () => {
++  const h = makeMatch({
++    mode: 'coop', difficulty: 'NORMAL', humans: 2, seed: 101, fake: true, clientCombat: true, instant: false,
++    script: (b) => (b.kind === 'normal' ? { damage: { p_0: 700, p_1: 500 } } : {}),
++  });
++  const m = h.m;
++  const pub = [];
++  h.onBroadcast.push((msg) => { if (msg.t === 'm.public') pub.push(msg); });
++  h.autoHumans();
++  h.start();
++  h.toPrep(1);
++  assert.deepEqual(rowOf(m, 'p_0'), { round: 1, dmg: 0, total: 0 }, 'PREP R1: nothing credited yet');
++  h.toPrep(2); // round 1 played and settled
++  const settle1 = pub.filter((x) => x.phase === PHASE.SETTLE && x.round === 1).pop();
++  assert.ok(settle1, 'a m.public frame went out during R1 SETTLE');
++  assert.deepEqual(settle1.players.find((p) => p.playerId === 'p_0').hudDmg, { round: 1, dmg: 700, total: 700 });
++  assert.deepEqual(settle1.players.find((p) => p.playerId === 'p_1').hudDmg, { round: 1, dmg: 500, total: 500 });
++  // ROUND_START R2 advanced the round: the same player now reads 0 for 本回合, the cumulative stands
++  assert.deepEqual(rowOf(m, 'p_0'), { round: 2, dmg: 0, total: 700 });
++  h.toPrep(3); // round 2 played and settled
++  const settle2 = pub.filter((x) => x.phase === PHASE.SETTLE && x.round === 2).pop();
++  assert.deepEqual(settle2.players.find((p) => p.playerId === 'p_0').hudDmg, { round: 2, dmg: 700, total: 1400 });
++  assert.deepEqual(rowOf(m, 'p_0'), { round: 3, dmg: 0, total: 1400 });
++  // the stored stamp agrees (what _hudDmgView reads after a reconnect / watch)
++  assert.equal(h.ps('p_0').hudRound, 2);
++  assert.equal(h.ps('p_0').hudDmg, 700);
++  assert.equal(h.ps('p_0').stats.dmgDealt, 1400);
++  h.invariants();
++  m.dispose();
++});
++
++test('hudDmg: a live boss round shares the pool damage, then settles it once (no double count)', () => {
++  const h = makeMatch({
++    mode: 'coop', difficulty: 'NORMAL', humans: 2, seed: 102, fake: true, clientCombat: true, instant: false,
++    script: (b) => (b.kind === 'boss' || b.kind === 'hidden'
++      ? { bossDps: 50, damage: { p_0: 800, p_1: 600 } }
++      : { damage: { p_0: 300, p_1: 200 } }),
++  });
++  const m = h.m;
++  const pub = [];
++  h.onBroadcast.push((msg) => { if (msg.t === 'm.public') pub.push(msg); });
++  h.autoHumans();
++  h.start();
++  h.drive(() => m.phase === PHASE.FINAL_ASSAULT);
++  assert.equal(m.round, m.gd.bossRound);
++  const ps = h.ps('p_0');
++  const ps1 = h.ps('p_1');
++  const preBoss = ps.stats.dmgDealt; // every normal round before the boss settled
++  const preBoss1 = ps1.stats.dmgDealt;
++  assert.ok(preBoss > 0 && preBoss1 > 0);
++  assert.equal(rowOf(m, 'p_0').dmg, 0, 'the boss round starts at 0');
++  assert.equal(rowOf(m, 'p_0').total, Math.round(preBoss), 'the settled cumulative carries over');
++  // a couple of seconds in, the authority's reported pool damage is credited per player and shows up live
++  h.sched.advance(2000);
++  const f = m.fields.find((x) => x.kind === 'boss');
++  const live = f.bossBy['p_0'] || 0;
++  assert.ok(live > 0, `the client's pool damage reaches f.bossBy (${live})`);
++  const want = { round: m.gd.bossRound, dmg: Math.round(live), total: Math.round(preBoss + live) };
++  assert.deepEqual(rowOf(m, 'p_0'), want);
++  m.flush(true);
++  const mid = pub[pub.length - 1];
++  assert.equal(mid.phase, PHASE.FINAL_ASSAULT);
++  assert.deepEqual(mid.players.find((p) => p.playerId === 'p_0').hudDmg, want, 'the live row is on the wire');
++  // the fight ends: the battle's own result is the truth — stamped as this round, added to the cumulative once
++  h.drive(() => ps.hudRound === m.gd.bossRound);
++  assert.equal(ps.hudDmg, 800);
++  assert.equal(ps.stats.dmgDealt, preBoss + 800);
++  assert.deepEqual(rowOf(m, 'p_0'), { round: m.gd.bossRound, dmg: 800, total: preBoss + 800 });
++  assert.equal(ps1.hudDmg, 600);
++  assert.equal(ps1.stats.dmgDealt, preBoss1 + 600);
++  h.runToEnd();
++  m.dispose();
++});

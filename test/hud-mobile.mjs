@@ -104,6 +104,39 @@ check("手机上点卡片切页", await page.evaluate(() => document.querySelect
 await page.tap("#rh-page-perf .rh-back");
 await sleep(300);
 
+// 4c) v1.7.0: the 伤害 page on a phone — its tabs and docked table fit, and the table can pop into
+// its own window without leaving the viewport
+await page.tap("#rh-card-damage");
+await sleep(400);
+const dmgPhone = await page.evaluate(() => {
+  const dock = document.querySelector("#rh-damage-dock-operators");
+  const r = dock?.getBoundingClientRect();
+  return {
+    active: document.querySelector("#rh-page-damage").classList.contains("is-active"),
+    tabs: ["operators", "players", "enemies"].every((k) => !!document.querySelector(`#rh-damage-tab-${k}`)),
+    w: r ? Math.round(r.width) : 0,
+    right: r ? Math.round(r.right) : -1,
+    vw: innerWidth,
+  };
+});
+check("手机上可打开伤害页且表格不溢出", dmgPhone.active && dmgPhone.tabs && dmgPhone.w > 0 && dmgPhone.right <= dmgPhone.vw, JSON.stringify(dmgPhone));
+await page.tap("#rh-damage-pop");
+await sleep(400);
+const winPhone = await page.evaluate(() => {
+  const p = document.getElementById("rh-damage-window");
+  if (!p) return null;
+  const r = p.getBoundingClientRect();
+  return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom), vw: innerWidth, vh: innerHeight };
+});
+check("手机可弹出独立窗口且在屏内",
+  !!winPhone && winPhone.left >= 0 && winPhone.top >= 0 && winPhone.right <= winPhone.vw && winPhone.bottom <= winPhone.vh,
+  JSON.stringify(winPhone));
+await shot("mob-damage.png");
+await page.tap("#rh-damage-window .rh-ibtn--x");
+await sleep(300);
+await page.tap("#rh-page-damage .rh-back");
+await sleep(300);
+
 // 5) drag the panel by its header with touch — the last interaction a tap must follow
 const hb = await (await page.$(".rh-head")).boundingBox();
 await page.touchscreen.touchStart(hb.x + 60, hb.y + 12);

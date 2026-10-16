@@ -52,7 +52,7 @@ const api = await page.evaluate(() => ({
   author: globalThis.__REALITY_HUD__?.author,
 }));
 check("面板已挂载", api.mounted);
-check("版本 1.6.0", api.ver === "1.6.0", String(api.ver));
+check("版本 1.7.0", api.ver === "1.7.0", String(api.ver));
 check("作者署名 Reality", api.author === "Reality", String(api.author));
 
 // --- home is the landing page: overview card + the full card grid -------------------------------
@@ -71,7 +71,7 @@ const home = await page.evaluate(() => {
 check("标题为 R HUD（无品牌字）", home.title === "R HUD", String(home.title));
 check("默认落在首页且只显示一页", home.active.join(",") === "rh-page-home" && home.overview && home.spark, home.active.join(","));
 check("首页有在线/房间/对局三个计数器", home.statCells === 3, String(home.statCells));
-check("首页卡片齐全（7 张）", home.cards.join(",") === "rh-card-invite,rh-card-match,rh-card-server,rh-card-perf,rh-card-log,rh-card-settings,rh-card-about", home.cards.join(","));
+check("首页卡片齐全（8 张）", home.cards.join(",") === "rh-card-invite,rh-card-match,rh-card-damage,rh-card-server,rh-card-perf,rh-card-log,rh-card-settings,rh-card-about", home.cards.join(","));
 
 const chrome = await page.evaluate(() => {
   const root = document.querySelector("#reality-hud");
@@ -232,6 +232,59 @@ const backFromMatch = await page.evaluate(() => {
   return document.querySelector("#rh-page-home").classList.contains("is-active");
 });
 check("「本局」页返回首页", backFromMatch);
+
+// v1.7.0: the 伤害 page — three tabs over three docked tables, 独立窗口 pops the active one
+const damagePage = await page.evaluate(async () => {
+  document.querySelector("#rh-card-damage").click();
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  return {
+    active: document.querySelector("#rh-page-damage").classList.contains("is-active"),
+    tabs: ["operators", "players", "enemies"].map((k) => document.querySelector(`#rh-damage-tab-${k}`)?.textContent),
+    docks: ["operators", "players", "enemies"].map((k) => !!document.querySelector(`#rh-damage-dock-${k}`)),
+    docked: !!document.querySelector("#rh-damage-dock-operators #rh-damage-table"),
+    windows: ["rh-damage-window", "rh-players-damage-window", "rh-enemies-damage-window"].filter((id) => document.getElementById(id)).length,
+    pop: document.querySelector("#rh-damage-pop")?.textContent,
+  };
+});
+check("点卡片进入「伤害」页（三标签 + 三个停靠位）",
+  damagePage.active && damagePage.tabs.join(",") === "干员,玩家,敌人" && damagePage.docks.every(Boolean) && damagePage.docked,
+  JSON.stringify(damagePage));
+check("伤害页默认全部停靠（无独立窗口）", damagePage.windows === 0 && damagePage.pop === "独立窗口", JSON.stringify(damagePage));
+
+// the tab strip switches the visible dock; 独立窗口 pops the active table and its × docks it back
+const tabSwitch = await page.evaluate(async () => {
+  document.querySelector("#rh-damage-tab-players").click();
+  await new Promise((r) => requestAnimationFrame(r));
+  return {
+    on: document.querySelector("#rh-damage-tab-players").classList.contains("is-on"),
+    opsHidden: document.querySelector("#rh-damage-dock-operators").hidden,
+    playersShown: !document.querySelector("#rh-damage-dock-players").hidden,
+  };
+});
+check("标签切换显示对应面板", tabSwitch.on && tabSwitch.opsHidden && tabSwitch.playersShown, JSON.stringify(tabSwitch));
+await page.evaluate(() => document.querySelector("#rh-damage-tab-operators").click());
+await page.click("#rh-damage-pop");
+await settle();
+const damagePopped = await page.evaluate(() => ({
+  win: !!document.getElementById("rh-damage-window"),
+  table: !!document.querySelector("#rh-damage-window #rh-damage-table"),
+  placeholder: !!document.querySelector("#rh-damage-dock-operators .rh-damage-detached"),
+  label: document.querySelector("#rh-damage-pop")?.textContent,
+}));
+check("「独立窗口」弹出当前统计", damagePopped.win && damagePopped.table && damagePopped.placeholder, JSON.stringify(damagePopped));
+check("弹出后按钮变「收回窗口」", damagePopped.label === "收回窗口", damagePopped.label);
+await page.click("#rh-damage-window .rh-ibtn--x");
+await settle();
+check("独立窗口 × 收回停靠位", await page.evaluate(() =>
+  !document.getElementById("rh-damage-window")
+  && !!document.querySelector("#rh-damage-dock-operators #rh-damage-table")
+  && document.querySelector("#rh-damage-pop")?.textContent === "独立窗口"));
+
+const backFromDamage = await page.evaluate(() => {
+  document.querySelector("#rh-page-damage .rh-back").click();
+  return document.querySelector("#rh-page-home").classList.contains("is-active");
+});
+check("「伤害」页返回首页", backFromDamage);
 
 // hide the page you are on → you are returned home
 const redirected = await page.evaluate(async () => {

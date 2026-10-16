@@ -51,7 +51,7 @@ const AUTHOR = Object.freeze({
   repoLabel: 'xianshi3/Stronghold-Protocol-Reality-HUD',
 });
 
-const MOD_VERSION = '1.6.0';
+const MOD_VERSION = '1.7.0';
 
 const DEFAULTS = {
   x: null,               // null = park it on the right edge (computed on first show)
@@ -65,10 +65,11 @@ const DEFAULTS = {
   idleOpacity: 0.3,
   mini: false,            // mini = only the RTT line, everything else folded away
   paused: false,          // paused = stop every timer and the rAF loop
-  page: 'home',           // the visible page: home | invite | match | server | perf | log | settings | about
+  page: 'home',           // the visible page: home | invite | match | damage | server | perf | log | settings | about
   show: {                 // per-page visibility (its card on the home grid), driven by the settings panel
     server: true,
     match: true,
+    damage: true,
     invite: true,
     perf: true,
     log: true,
@@ -76,7 +77,10 @@ const DEFAULTS = {
     about: true,
   },
   damageWindow: {
-    visible: true,
+    // v1.7.0: the three tables live in the 伤害 page; `popped` says which of them float in their
+    // own window instead. The legacy `visible` flag is ignored (an old config simply starts docked).
+    popped: { operators: false, players: false, enemies: false },
+    tab: 'operators',       // the 伤害 page's active tab: operators | players | enemies
     x: null,
     y: null,
     width: 620,
@@ -87,9 +91,9 @@ const DEFAULTS = {
     columnWidths: {},
     collapsed: false,
     windows: {
-      operators: { x: null, y: null, width: 620, height: null, collapsed: false, visible: true, columnWidths: {} },
-      players: { x: null, y: null, width: 420, height: null, collapsed: false, visible: true, columnWidths: {} },
-      enemies: { x: null, y: null, width: 480, height: null, collapsed: false, visible: true, columnWidths: {} },
+      operators: { x: null, y: null, width: 620, height: null, collapsed: false, columnWidths: {} },
+      players: { x: null, y: null, width: 420, height: null, collapsed: false, columnWidths: {} },
+      enemies: { x: null, y: null, width: 480, height: null, collapsed: false, columnWidths: {} },
     },
   },
   folded: {},             // legacy (v1.5.x per-section folds) — kept so old configs load, no longer used
@@ -105,6 +109,7 @@ const WIDTH_MAX = 720;
 const PAGES = [
   { id: 'invite', label: '邀请', icon: 'invite' },
   { id: 'match', label: '本局', icon: 'match' },
+  { id: 'damage', label: '伤害', icon: 'damage' },
   { id: 'server', label: '服务', icon: 'server' },
   { id: 'perf', label: '性能', icon: 'perf' },
   { id: 'log', label: '日志', icon: 'log' },
@@ -142,6 +147,10 @@ function loadConfig() {
       damageWindow: {
         ...base.damageWindow,
         ...savedDamage,
+        // v1.7.0: the three tables start docked in the 伤害 page (an old `visible: true` config is
+        // deliberately not carried over); `popped` and `tab` are sanitized.
+        popped: Object.fromEntries(Object.keys(base.damageWindow.popped).map((k) => [k, savedDamage.popped?.[k] === true])),
+        tab: ['operators', 'players', 'enemies'].includes(savedDamage.tab) ? savedDamage.tab : base.damageWindow.tab,
         windows,
       },
       folded: {},
@@ -292,6 +301,7 @@ const state = {
     collecting: false,
     paused: false,
     finished: false,
+    serverDmg: false, // m.public players[].hudDmg seen → the server runs the Reality HUD damage patch
     phase: null,
     lastFrameAt: 0,
   },
@@ -641,6 +651,7 @@ function resetDamageSession() {
   state.damage.collecting = false;
   state.damage.paused = false;
   state.damage.finished = false;
+  state.damage.serverDmg = false;
   state.damage.phase = null;
   state.damage.unattributed = { current: 0, total: 0, currentTypes: emptyDamageTypes(), totalTypes: emptyDamageTypes() };
   scheduleRender('damage');
@@ -685,28 +696,59 @@ function ensureDamagePlayer(raw, defaults = {}) {
   return player;
 }
 
-function updateDamagePlayers(rawPlayers, allowStopped = false, snapshotKey = null) {
-  if (!Array.isArray(rawPlayers)) return;
-  for (const raw of rawPlayers) {
-    if (!raw || typeof raw !== 'object') continue;
-    const player = ensureDamagePlayer(raw);
-    if (!player) continue;
-    if ((!state.damage.collecting && !allowStopped) || state.damage.paused) continue;
-    const stats = raw.stats && typeof raw.stats === 'object' ? raw.stats : raw;
-    const reported = finiteNumber(stats.damage, stats.dmg, stats.damageDealt, stats.dealt);
-    if (reported == null || reported < 0) continue;
+/**
+ * Bring one player's record up to a reported snapshot:
+ *  - `round` — the damage this round has produced so far (a monotonic per-round value): the display
+ *    tops up to it, adding only what the live events had not counted yet;
+ *  - `total` — the match's own cumulative damage (m.private stats.dmgDealt, m.result, a patched
+ *    server's hudDmg.total): a floor on 全局累计, never a delta. Running a cumulative value through
+ *    the per-round delta path double counted every settled round (fixed in 1.7.0).
+ * Returns the player record (or null when the row has no usable id).
+ */
+function mergeReportedPlayerDamage(raw, reported = {}, snapshotKey = null, opts = {}) {
+  const player = ensureDamagePlayer(raw);
+  if (!player) return null;
+  if ((!state.damage.collecting && !opts.allowStopped) || state.damage.paused) return player;
+  const roundValue = finiteNumber(reported.round);
+  if (roundValue != null && roundValue >= 0) {
     const key = `player:${snapshotKey ?? state.damage.battleId ?? 'round'}:${state.damage.round ?? 'match'}`;
     const prev = player.reported[key] ?? 0;
-    if (reported >= prev) {
+    if (roundValue >= prev) {
       const before = player.current;
-      if (player.current < reported) {
-        player.current = reported;
-        player.total += Math.max(0, reported - before);
+      if (player.current < roundValue) {
+        player.current = roundValue;
+        player.total += Math.max(0, roundValue - before);
       }
-      player.reported[key] = reported;
+      player.reported[key] = roundValue;
     }
   }
-  scheduleRender('damage');
+  const totalValue = finiteNumber(reported.total);
+  if (totalValue != null && totalValue > player.total) player.total = totalValue;
+  return player;
+}
+
+/**
+ * m.public players[].hudDmg — the per-player damage a server with the Reality HUD damage patch
+ * broadcasts (`server-patch/reality-hud-damage.patch`): { round, dmg, total }. `dmg` is stamped
+ * with its round, so a frame still in flight when the round advances never lands in the next
+ * round's 本回合; `total` is the match's cumulative. A vanilla server sends no hudDmg and teammates
+ * simply stay unknown until m.result.
+ */
+function mergePublicPlayerDamage(msg) {
+  if (!Array.isArray(msg?.players)) return;
+  let seen = false;
+  for (const row of msg.players) {
+    if (!row || typeof row !== 'object') continue;
+    ensureDamagePlayer(row);
+    const hud = row.hudDmg && typeof row.hudDmg === 'object' ? row.hudDmg : null;
+    if (!hud) continue;
+    seen = true;
+    mergeReportedPlayerDamage(row, {
+      round: hud.round === state.damage.round ? hud.dmg : null,
+      total: hud.total,
+    }, 'public', { allowStopped: true });
+  }
+  if (seen) state.damage.serverDmg = true;
 }
 
 function recordPlayerDamage(ownerId, amount, type) {
@@ -1054,8 +1096,9 @@ function parseResultDamage(msg, allowFinal = false) {
   if (state.damage.paused || (!state.damage.collecting && !allowFinal)) return;
   const result = msg?.result && typeof msg.result === 'object' ? msg.result : msg;
   for (const player of Array.isArray(result?.players) ? result.players : []) {
-    ensureDamagePlayer(player);
-    updateDamagePlayers([player], allowFinal, msg?.battleId);
+    // stats.dmgDealt is the match's cumulative damage — a 全局累计 floor, never a per-round delta
+    const rec = mergeReportedPlayerDamage(player, { total: player?.stats?.dmgDealt }, 'result', { allowStopped: allowFinal });
+    if (rec && allowFinal && finiteNumber(player?.stats?.dmgDealt) != null) rec.settled = true;
     updateDamageUnits(player?.unitStats || [], 'result', player, msg?.battleId, allowFinal);
     const units = player?.units || player?.lineup || [];
     updateDamageUnits(units, 'result-units', player, msg?.battleId, allowFinal);
@@ -1110,13 +1153,6 @@ function scheduleRender(what) {
 
 let root = null;
 let els = {};
-let damageRoot = null;
-let damageEls = {};
-let playerDamageRoot = null;
-let playerDamageEls = {};
-let enemyDamageRoot = null;
-let enemyDamageEls = {};
-let damageMounted = false;
 
 function iconBtn(id, glyph, title, onClick) {
   return h('button', { class: 'rh-ibtn', id, title, 'aria-label': title, onclick: onClick }, glyph);
@@ -1143,7 +1179,7 @@ function syncMenu() {
     'rh-menu-pin': state.cfg.pinned,
     'rh-menu-mini': state.cfg.mini,
     'rh-menu-pause': state.cfg.paused,
-    'rh-menu-damage': damageMounted,
+    'rh-menu-damage': state.cfg.page === 'damage',
   };
   for (const [id, on] of Object.entries(rows)) {
     const row = $('#' + id, root);
@@ -1183,289 +1219,316 @@ function activeEffectsText(rec) {
   return effects.length ? effects.map(effectText).join('；') : '—';
 }
 
-function buildDamageSection(id, label, content, collapsed = false) {
-  const section = h('div', { class: 'rh-sec rh-damage-sec', id: `rh-damage-sec-${id}` });
-  const fold = h('button', {
-    class: 'rh-mini', title: '折叠 / 展开这一栏',
-    onclick: () => {
-      const next = section.classList.toggle('is-folded');
-      fold.textContent = next ? '+' : '−';
-      state.cfg.damageWindow[`${id}Collapsed`] = next;
-      saveConfig();
-    },
-  }, collapsed ? '+' : '−');
-  const head = h('div', { class: 'rh-sec-head' }, h('span', { class: 'rh-sec-label', text: label }), fold);
-  section.append(head, content);
-  if (collapsed) section.classList.add('is-folded');
-  return { section, fold };
+// ---------------------------------------------------------------------------------------------
+// damage views — one table each (干员 / 玩家 / 敌人), docked in the 伤害 page or in their own window
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The three damage tables (v1.7.0). Each has exactly ONE content element, moved between its dock
+ * on the 伤害 page and its own floating window when popped — so both places share one render path,
+ * one scroll position and one set of column widths, and no table is ever built twice. The old
+ * `#rh-damage-window` / `#rh-players-damage-window` / `#rh-enemies-damage-window` ids still name
+ * the floating windows.
+ */
+const DAMAGE_MODULES = [
+  { kind: 'operators', title: '干员伤害', tab: '干员', aria: '战斗伤害统计', defW: 620, minW: 360, defH: 300, minH: 240, offX: 0, offY: 0, foot: '本回合 / 全局 · 伤害类型 · 增益/减益持续时间' },
+  { kind: 'players', title: '玩家伤害', tab: '玩家', aria: '玩家伤害统计', defW: 420, minW: 320, defH: 260, minH: 220, offX: 260, offY: 0, foot: '本回合 / 全局累计' },
+  { kind: 'enemies', title: '敌人伤害', tab: '敌人', aria: '敌方伤害统计', defW: 420, minW: 320, defH: 260, minH: 220, offX: 0, offY: 300, foot: '本回合 / 全局 · 伤害类型 · 受伤干员' },
+];
+const DAMAGE_KINDS = DAMAGE_MODULES.map((m) => m.kind);
+const damageModule = (kind) => DAMAGE_MODULES.find((m) => m.kind === kind) || DAMAGE_MODULES[0];
+
+/** kind → { content, els, window, dock }: the shared view, its window (built on the first pop) and its dock. */
+const damageView = {};
+let damagePageEl = null;
+let damagePopBtn = null;
+const damageTabChips = {};
+
+/** Column drag limits per kind; the widths live on the shared content element (both hosts read them). */
+const DAMAGE_COLUMNS = {
+  operators: { prefix: '--rh-damage-col-', limits: { name: [100, 360], current: [52, 180], total: [52, 180], types: [96, 360], effects: [140, 520] } },
+  players: { prefix: '--rh-player-col-', limits: { name: [90, 360], current: [52, 180], total: [52, 180], types: [96, 360] } },
+  enemies: { prefix: '--rh-damage-col-', limits: { name: [100, 360], current: [52, 180], total: [52, 180], types: [96, 360], targets: [140, 520] } },
+};
+
+const damageCfg = (kind) => state.cfg.damageWindow.windows[kind];
+const damageIsPopped = (kind) => state.cfg.damageWindow.popped[kind] === true;
+const damageTab = () => (DAMAGE_KINDS.includes(state.cfg.damageWindow.tab) ? state.cfg.damageWindow.tab : 'operators');
+
+/** Every element carrying the damage font scale: the 伤害 page (docked tables) and the open windows. */
+function damageHosts() {
+  const hosts = [damagePageEl];
+  for (const kind of DAMAGE_KINDS) if (damageView[kind]?.window) hosts.push(damageView[kind].window);
+  return hosts.filter(Boolean);
 }
 
-function damageWindowPlace() {
-  if (!damageRoot) return;
-  const cfg = state.cfg.damageWindow.windows.operators;
+/** The content of one damage table: round + summary strip, the rows, a foot line. Built once. */
+function buildDamageView(kind) {
+  const mod = damageModule(kind);
+  const id = (suffix) => (kind === 'operators' ? `rh-damage-${suffix}` : `rh-${kind}-damage-${suffix}`);
+  const round = h('span', { class: 'rh-damage-round', id: id('round'), text: '等待战斗' });
+  const summary = h('span', { class: 'rh-damage-summary', id: id('summary'), text: '等待战斗数据…' });
+  const strip = h('div', { class: 'rh-damage-strip' }, round, summary);
+  const body = h('div', { class: 'rh-damage-scroll', id: id('body') });
+  const foot = h('div', { class: 'rh-damage-foot', id: id('foot'), text: mod.foot });
+  const content = h('div', { class: 'rh-damage-view', id: `rh-damage-view-${kind}` }, strip, body, foot);
+  const els = { round, summary, body, foot, strip };
+  if (kind === 'operators') {
+    els.table = h('div', { class: 'rh-damage-table', id: 'rh-damage-table' });
+    els.effects = h('div', { class: 'rh-damage-team-effects', id: 'rh-damage-team-effects' });
+    body.append(els.table, els.effects);
+  }
+  return { mod, content, els };
+}
+
+/** Build the shared view on first use, restore its saved column widths and bind the header dividers. */
+function ensureDamageView(kind) {
+  if (damageView[kind]) return damageView[kind];
+  const built = buildDamageView(kind);
+  damageView[kind] = { ...built, window: null, dock: null };
+  applyDamageColumns(kind);
+  enableDamageColumnResize(kind);
+  return damageView[kind];
+}
+
+function applyDamageColumns(kind) {
+  const view = damageView[kind];
+  const spec = DAMAGE_COLUMNS[kind];
+  if (!view || !spec) return;
+  for (const [col, width] of Object.entries(damageCfg(kind).columnWidths || {})) {
+    if (spec.limits[col] && Number.isFinite(Number(width))) {
+      view.content.style.setProperty(`${spec.prefix}${col}`, `${clamp(Number(width), spec.limits[col][0], spec.limits[col][1])}px`);
+    }
+  }
+}
+
+/** The floating window of one table (the old windows' title bar and ids), built on the first pop. */
+function buildDamageWindow(kind) {
+  const mod = damageModule(kind);
+  const cfg = damageCfg(kind);
+  const panel = h('div', {
+    class: 'rh-damage-window rh-damage-host',
+    id: kind === 'operators' ? 'rh-damage-window' : `rh-${kind}-damage-window`,
+    role: 'dialog', 'aria-label': mod.aria,
+  });
+  panel.style.setProperty('--rh-damage-w', `${clamp(Number(cfg.width) || mod.defW, mod.minW, 860)}px`);
+  panel.style.setProperty('--rh-damage-scale', String(clamp(Number(state.cfg.damageWindow.fontScale) || 1, 0.8, 1.5)));
+  if (Number.isFinite(Number(cfg.height))) {
+    panel.style.height = `${clamp(Number(cfg.height), mod.minH, Math.max(mod.minH, (globalThis.innerHeight || 768) - 16))}px`;
+  }
+  const fold = h('button', { class: 'rh-ibtn', id: kind === 'operators' ? 'rh-damage-fold' : null, title: '折叠 / 展开', onclick: () => {
+    cfg.collapsed = !cfg.collapsed;
+    panel.classList.toggle('is-collapsed', cfg.collapsed);
+    fold.textContent = cfg.collapsed ? '+' : '—';
+    saveConfig();
+  } }, cfg.collapsed ? '+' : '—');
+  const close = h('button', { class: 'rh-ibtn rh-ibtn--x', id: kind === 'operators' ? 'rh-damage-close' : null, title: `收回「${mod.title}」（放回伤害页）`, onclick: () => setDamagePopped(kind, false) }, '×');
+  const head = h('div', { class: 'rh-damage-head' },
+    h('span', { class: 'rh-dot is-ok' }),
+    h('span', { class: 'rh-damage-title', text: mod.title }),
+    h('div', { class: 'rh-head-actions' }, fold, close),
+  );
+  const body = h('div', { class: 'rh-damage-body' });
+  const grip = h('div', { class: 'rh-damage-grip', title: '拖动调整窗口大小', 'aria-label': '拖动调整窗口大小' });
+  panel.append(head, body, grip);
+  if (cfg.collapsed) panel.classList.add('is-collapsed');
+  enableDamageWindowDrag(kind, panel);
+  return panel;
+}
+
+/** Where a view lives right now: its floating window (popped) or its dock on the 伤害 page. */
+function mountDamageView(kind) {
+  const view = ensureDamageView(kind);
+  if (damageIsPopped(kind)) {
+    if (!view.window) view.window = buildDamageWindow(kind);
+    const body = view.window.querySelector('.rh-damage-body');
+    if (body && view.content.parentElement !== body) body.append(view.content);
+    if (!view.window.isConnected) document.body.append(view.window);
+    placeDamageWindow(kind);
+  } else {
+    view.window?.remove();
+    if (view.dock && view.content.parentElement !== view.dock) view.dock.append(view.content);
+  }
+  syncDamageDock(kind);
+  syncDamagePopButton();
+}
+
+/** While a table floats, its dock keeps a small "it is in its own window" placeholder with a 收回 button. */
+function syncDamageDock(kind) {
+  const view = damageView[kind];
+  if (!view?.dock) return;
+  if (!damageIsPopped(kind)) {
+    if (view.content.parentElement !== view.dock) view.dock.replaceChildren(view.content);
+    return;
+  }
+  const mod = damageModule(kind);
+  view.dock.replaceChildren(h('div', { class: 'rh-damage-detached' },
+    h('span', { text: `${mod.title}已在独立窗口中显示。` }),
+    h('button', { class: 'rh-mini', type: 'button', title: `把「${mod.title}」放回面板`, onclick: () => setDamagePopped(kind, false) }, '收回'),
+  ));
+}
+
+function setDamagePopped(kind, popped) {
+  if (!DAMAGE_KINDS.includes(kind)) return;
+  state.cfg.damageWindow.popped[kind] = !!popped;
+  mountDamageView(kind);
+  syncDamageTabs();
+  saveConfig();
+  scheduleRender('damage');
+}
+
+function syncDamagePopButton() {
+  if (!damagePopBtn) return;
+  const kind = damageTab();
+  const popped = damageIsPopped(kind);
+  const mod = damageModule(kind);
+  damagePopBtn.textContent = popped ? '收回窗口' : '独立窗口';
+  damagePopBtn.title = popped ? `把「${mod.title}」放回伤害页` : `把「${mod.title}」弹成独立窗口（可拖动 / 缩放）`;
+  damagePopBtn.classList.toggle('is-on', popped);
+}
+
+function syncDamageTabs() {
+  const active = damageTab();
+  state.cfg.damageWindow.tab = active;
+  for (const kind of DAMAGE_KINDS) {
+    const dock = damageView[kind]?.dock;
+    if (dock) dock.hidden = kind !== active;
+    const chip = damageTabChips[kind];
+    if (chip) chip.classList.toggle('is-on', kind === active);
+  }
+  syncDamagePopButton();
+}
+
+function setDamageTab(kind) {
+  if (!DAMAGE_KINDS.includes(kind)) kind = 'operators';
+  state.cfg.damageWindow.tab = kind;
+  syncDamageTabs();
+  saveConfig();
+}
+
+/** The 伤害 page: a tab strip for the three tables and a 「独立窗口」 toggle for the active one. */
+function buildDamagePage() {
+  const tabs = h('div', { class: 'rh-damage-tabs', id: 'rh-damage-tabs' },
+    ...DAMAGE_MODULES.map((m) => {
+      const chip = h('button', {
+        class: 'rh-chip', type: 'button', id: `rh-damage-tab-${m.kind}`, 'data-kind': m.kind,
+        title: `查看${m.title}`,
+        onclick: () => setDamageTab(m.kind),
+      }, m.tab);
+      damageTabChips[m.kind] = chip;
+      return chip;
+    }));
+  const docks = h('div', { class: 'rh-damage-docks', id: 'rh-damage-docks' },
+    ...DAMAGE_MODULES.map((m) => h('div', { class: 'rh-damage-dock', id: `rh-damage-dock-${m.kind}`, 'data-kind': m.kind })));
+  damagePopBtn = h('button', { class: 'rh-mini', id: 'rh-damage-pop', type: 'button', title: '弹成独立窗口', onclick: () => {
+    const kind = damageTab();
+    setDamagePopped(kind, !damageIsPopped(kind));
+  } }, '独立窗口');
+  const page = buildPage('damage', '伤害', [tabs, docks], damagePopBtn);
+  page.classList.add('rh-damage-host');
+  damagePageEl = page;
+  for (const m of DAMAGE_MODULES) ensureDamageView(m.kind).dock = page.querySelector(`#rh-damage-dock-${m.kind}`);
+  return page;
+}
+
+function placeDamageWindow(kind) {
+  const view = damageView[kind];
+  const panel = view?.window;
+  if (!panel) return;
+  const mod = damageModule(kind);
+  const cfg = damageCfg(kind);
   const vw = globalThis.innerWidth || 1024;
   const vh = globalThis.innerHeight || 768;
-  const w = damageRoot.offsetWidth || cfg.width || 620;
-  const hgt = damageRoot.offsetHeight || 300;
-  const x = cfg.x == null ? Math.max(8, vw - w - 16) : cfg.x;
-  const y = cfg.y == null ? Math.max(8, vh - hgt - 20) : cfg.y;
-  damageRoot.style.left = `${clamp(x, 8, Math.max(8, vw - w - 8))}px`;
-  damageRoot.style.top = `${clamp(y, 8, Math.max(8, vh - hgt - 8))}px`;
+  const w = panel.offsetWidth || cfg.width || mod.defW;
+  const hgt = panel.offsetHeight || mod.defH;
+  const x = cfg.x == null ? Math.max(8, vw - w - 16 - mod.offX) : cfg.x;
+  const y = cfg.y == null ? Math.max(8, vh - hgt - 20 - mod.offY) : cfg.y;
+  panel.style.left = `${clamp(x, 8, Math.max(8, vw - w - 8))}px`;
+  panel.style.top = `${clamp(y, 8, Math.max(8, vh - hgt - 8))}px`;
 }
 
-function enableDamageWindowDrag() {
-  const cfg = state.cfg.damageWindow.windows.operators;
-  const head = damageRoot?.querySelector('.rh-damage-head');
-  if (!head || head.dataset.dragBound) return;
-  head.dataset.dragBound = '1';
-  let active = false, sx = 0, sy = 0, ox = 0, oy = 0;
-  head.addEventListener('pointerdown', (ev) => {
-    if (ev.target.closest('button')) return;
-    active = true; sx = ev.clientX; sy = ev.clientY;
-    ox = damageRoot.offsetLeft; oy = damageRoot.offsetTop;
-    damageRoot.classList.add('is-dragging'); head.setPointerCapture?.(ev.pointerId); ev.preventDefault();
-  });
-  head.addEventListener('pointermove', (ev) => {
-    if (!active) return;
-    const vw = globalThis.innerWidth || 1024, vh = globalThis.innerHeight || 768;
-    damageRoot.style.left = `${clamp(ox + ev.clientX - sx, 8, Math.max(8, vw - damageRoot.offsetWidth - 8))}px`;
-    damageRoot.style.top = `${clamp(oy + ev.clientY - sy, 8, Math.max(8, vh - damageRoot.offsetHeight - 8))}px`;
-  });
-  const end = () => {
-    if (!active) return;
-    active = false; damageRoot.classList.remove('is-dragging');
-    cfg.x = damageRoot.offsetLeft; cfg.y = damageRoot.offsetTop; saveConfig();
-  };
-  head.addEventListener('pointerup', end); head.addEventListener('pointercancel', end);
-
-  const grip = damageRoot?.querySelector('.rh-damage-grip');
+function enableDamageWindowDrag(kind, panel) {
+  const mod = damageModule(kind);
+  const cfg = damageCfg(kind);
+  const head = panel.querySelector('.rh-damage-head');
+  if (head) {
+    let active = false, sx = 0, sy = 0, ox = 0, oy = 0;
+    head.addEventListener('pointerdown', (ev) => {
+      if (ev.target.closest('button')) return;
+      active = true; sx = ev.clientX; sy = ev.clientY; ox = panel.offsetLeft; oy = panel.offsetTop;
+      panel.classList.add('is-dragging'); head.setPointerCapture?.(ev.pointerId); ev.preventDefault();
+    });
+    head.addEventListener('pointermove', (ev) => {
+      if (!active) return;
+      const vw = globalThis.innerWidth || 1024, vh = globalThis.innerHeight || 768;
+      panel.style.left = `${clamp(ox + ev.clientX - sx, 8, Math.max(8, vw - panel.offsetWidth - 8))}px`;
+      panel.style.top = `${clamp(oy + ev.clientY - sy, 8, Math.max(8, vh - panel.offsetHeight - 8))}px`;
+    });
+    const end = (ev) => {
+      if (!active) return;
+      active = false; panel.classList.remove('is-dragging'); head.releasePointerCapture?.(ev.pointerId);
+      cfg.x = panel.offsetLeft; cfg.y = panel.offsetTop; saveConfig();
+    };
+    head.addEventListener('pointerup', end); head.addEventListener('pointercancel', end);
+  }
+  const grip = panel.querySelector('.rh-damage-grip');
   if (!grip) return;
   let resizing = false, rw = 0, rh = 0, rsx = 0, rsy = 0;
   grip.addEventListener('pointerdown', (ev) => {
     resizing = true;
-    rw = damageRoot.offsetWidth; rh = damageRoot.offsetHeight;
+    rw = panel.offsetWidth; rh = panel.offsetHeight;
     rsx = ev.clientX; rsy = ev.clientY;
-    damageRoot.classList.add('is-resizing');
+    panel.classList.add('is-resizing');
     grip.setPointerCapture?.(ev.pointerId);
     ev.preventDefault(); ev.stopPropagation();
   });
   grip.addEventListener('pointermove', (ev) => {
     if (!resizing) return;
     const vw = globalThis.innerWidth || 1024, vh = globalThis.innerHeight || 768;
-    const width = clamp(rw + ev.clientX - rsx, 360, Math.min(860, vw - 16));
-    const height = clamp(rh + ev.clientY - rsy, 240, Math.min(900, vh - 16));
-    damageRoot.style.setProperty('--rh-damage-w', `${width}px`);
-    damageRoot.style.height = `${height}px`;
+    const width = clamp(rw + ev.clientX - rsx, mod.minW, Math.min(860, vw - 16));
+    const height = clamp(rh + ev.clientY - rsy, mod.minH, Math.min(900, vh - 16));
+    panel.style.setProperty('--rh-damage-w', `${width}px`);
+    panel.style.height = `${height}px`;
   });
   const endResize = (ev) => {
     if (!resizing) return;
     resizing = false;
-    damageRoot.classList.remove('is-resizing');
+    panel.classList.remove('is-resizing');
     grip.releasePointerCapture?.(ev.pointerId);
-    cfg.width = damageRoot.offsetWidth;
-    cfg.height = damageRoot.offsetHeight;
+    cfg.width = panel.offsetWidth;
+    cfg.height = panel.offsetHeight;
     saveConfig();
   };
   grip.addEventListener('pointerup', endResize); grip.addEventListener('pointercancel', endResize);
 }
 
-function buildDamageWindow() {
-  const cfg = state.cfg.damageWindow.windows.operators;
-  damageRoot = h('div', { class: 'rh-damage-window', id: 'rh-damage-window', role: 'dialog', 'aria-label': '战斗伤害统计' });
-  damageRoot.style.setProperty('--rh-damage-w', `${clamp(Number(cfg.width) || 620, 360, 860)}px`);
-  damageRoot.style.setProperty('--rh-damage-scale', String(clamp(Number(state.cfg.damageWindow.fontScale) || 1, 0.8, 1.5)));
-  const columnMins = { name: 100, current: 52, total: 52, types: 96, effects: 140 };
-  const columnMaxs = { name: 360, current: 180, total: 180, types: 360, effects: 520 };
-  for (const [col, width] of Object.entries(cfg.columnWidths || state.cfg.damageWindow.columnWidths || {})) {
-    if (Number.isFinite(Number(width)) && columnMins[col]) {
-      damageRoot.style.setProperty(`--rh-damage-col-${col}`, `${clamp(Number(width), columnMins[col], columnMaxs[col])}px`);
-    }
-  }
-  if (Number.isFinite(Number(cfg.height))) {
-    damageRoot.style.height = `${clamp(Number(cfg.height), 240, Math.max(240, (globalThis.innerHeight || 768) - 16))}px`;
-  }
-  const fold = h('button', { class: 'rh-ibtn', id: 'rh-damage-fold', title: '折叠 / 展开', onclick: () => {
-    cfg.collapsed = !cfg.collapsed;
-    damageRoot.classList.toggle('is-collapsed', cfg.collapsed);
-    fold.textContent = cfg.collapsed ? '+' : '—';
-    saveConfig();
-  } }, cfg.collapsed ? '+' : '—');
-  const close = h('button', { class: 'rh-ibtn rh-ibtn--x', id: 'rh-damage-close', title: '关闭伤害统计窗口', onclick: () => { hideDamageWindow(); syncMenu(); } }, '×');
-  const head = h('div', { class: 'rh-damage-head' },
-    h('span', { class: 'rh-dot is-ok', id: 'rh-damage-dot' }),
-    h('span', { class: 'rh-damage-title', text: '干员伤害' }),
-    h('span', { class: 'rh-damage-round', id: 'rh-damage-round', text: '等待战斗' }),
-    h('div', { class: 'rh-head-actions' }, fold, close),
-  );
-  const summary = h('div', { class: 'rh-damage-summary', id: 'rh-damage-summary', text: '等待战斗数据…' });
-  const table = h('div', { class: 'rh-damage-table', id: 'rh-damage-table' });
-  const effects = h('div', { class: 'rh-damage-team-effects', id: 'rh-damage-team-effects' });
-  const foot = h('div', { class: 'rh-damage-foot', text: '本回合 / 全局 · 伤害类型 · 增益/减益持续时间' });
-  const operatorSection = buildDamageSection('operators', '干员伤害', table, !!cfg.collapsed);
-  const body = h('div', { class: 'rh-body rh-damage-body', id: 'rh-damage-body' }, operatorSection.section, effects);
-  const grip = h('div', { class: 'rh-damage-grip', id: 'rh-damage-grip', title: '拖动调整伤害窗口大小', 'aria-label': '拖动调整伤害窗口大小' });
-  damageRoot.append(head, summary, body, foot, grip);
-  if (cfg.collapsed) damageRoot.classList.add('is-collapsed');
-  damageEls = { head, fold, round: $('#rh-damage-round', damageRoot), summary, table, effects, foot, grip, body, operatorSection };
-  enableDamageColumnResize();
-  enableDamageWindowDrag();
-  return damageRoot;
-}
-
-function buildSimpleDamageWindow(kind, title, ariaLabel) {
-  const cfg = state.cfg.damageWindow.windows[kind];
-  const panel = h('div', { class: 'rh-damage-window', id: `rh-${kind}-damage-window`, role: 'dialog', 'aria-label': ariaLabel });
-  panel.style.setProperty('--rh-damage-w', `${clamp(Number(cfg.width) || 420, 320, 860)}px`);
-  panel.style.setProperty('--rh-damage-scale', String(clamp(Number(state.cfg.damageWindow.fontScale) || 1, 0.8, 1.5)));
-  const limits = kind === 'players'
-    ? { name: [90, 360], current: [52, 180], total: [52, 180], types: [96, 360] }
-    : { name: [100, 360], current: [52, 180], total: [52, 180], types: [96, 360], targets: [140, 520] };
-  const prefix = kind === 'players' ? '--rh-player-col-' : '--rh-damage-col-';
-  for (const [col, width] of Object.entries(cfg.columnWidths || {})) if (limits[col]) panel.style.setProperty(`${prefix}${col}`, `${clamp(Number(width), limits[col][0], limits[col][1])}px`);
-  if (Number.isFinite(Number(cfg.height))) panel.style.height = `${clamp(Number(cfg.height), 220, Math.max(220, (globalThis.innerHeight || 768) - 16))}px`;
-  const fold = h('button', { class: 'rh-ibtn', title: '折叠 / 展开', onclick: () => {
-    cfg.collapsed = !cfg.collapsed;
-    panel.classList.toggle('is-collapsed', cfg.collapsed);
-    fold.textContent = cfg.collapsed ? '+' : '—';
-    saveConfig();
-  } }, cfg.collapsed ? '+' : '—');
-  const close = h('button', { class: 'rh-ibtn rh-ibtn--x', title: `关闭${title}`, onclick: () => { hideDamageWindow(); syncMenu(); } }, '×');
-  const head = h('div', { class: 'rh-damage-head' },
-    h('span', { class: 'rh-dot is-ok' }),
-    h('span', { class: 'rh-damage-title', text: title }),
-    h('span', { class: 'rh-damage-round', text: '等待战斗' }),
-    h('div', { class: 'rh-head-actions' }, fold, close),
-  );
-  const summary = h('div', { class: 'rh-damage-summary', text: '等待战斗数据…' });
-  const body = h('div', { class: 'rh-body rh-damage-body' });
-  const foot = h('div', { class: 'rh-damage-foot', text: '本回合 / 全局 · 伤害类型' });
-  const grip = h('div', { class: 'rh-damage-grip', title: '拖动调整窗口大小', 'aria-label': '拖动调整窗口大小' });
-  panel.append(head, summary, body, foot, grip);
-  if (cfg.collapsed) panel.classList.add('is-collapsed');
-  enableSimpleDamageDrag(panel, cfg);
-  enableSimpleDamageResize(panel, cfg);
-  enableSimpleColumnResize(panel, cfg, kind, limits, prefix);
-  return { panel, els: { head, fold, round: head.querySelector('.rh-damage-round'), summary, body, foot, grip } };
-}
-
-function enableSimpleDamageDrag(panel, cfg) {
-  const head = panel.querySelector('.rh-damage-head');
-  if (!head) return;
-  let active = false, sx = 0, sy = 0, ox = 0, oy = 0;
-  head.addEventListener('pointerdown', (ev) => {
-    if (ev.target.closest('button')) return;
-    active = true; sx = ev.clientX; sy = ev.clientY; ox = panel.offsetLeft; oy = panel.offsetTop;
-    panel.classList.add('is-dragging'); head.setPointerCapture?.(ev.pointerId); ev.preventDefault();
-  });
-  head.addEventListener('pointermove', (ev) => {
-    if (!active) return;
-    const vw = globalThis.innerWidth || 1024, vh = globalThis.innerHeight || 768;
-    panel.style.left = `${clamp(ox + ev.clientX - sx, 8, Math.max(8, vw - panel.offsetWidth - 8))}px`;
-    panel.style.top = `${clamp(oy + ev.clientY - sy, 8, Math.max(8, vh - panel.offsetHeight - 8))}px`;
-  });
-  const end = (ev) => {
-    if (!active) return;
-    active = false; panel.classList.remove('is-dragging'); head.releasePointerCapture?.(ev.pointerId);
-    cfg.x = panel.offsetLeft; cfg.y = panel.offsetTop; saveConfig();
-  };
-  head.addEventListener('pointerup', end); head.addEventListener('pointercancel', end);
-}
-
-function enableSimpleDamageResize(panel, cfg) {
-  const grip = panel.querySelector('.rh-damage-grip');
-  if (!grip) return;
-  let resizing = false, rw = 0, rh = 0, sx = 0, sy = 0;
-  grip.addEventListener('pointerdown', (ev) => {
-    resizing = true; rw = panel.offsetWidth; rh = panel.offsetHeight; sx = ev.clientX; sy = ev.clientY;
-    panel.classList.add('is-resizing'); grip.setPointerCapture?.(ev.pointerId); ev.preventDefault(); ev.stopPropagation();
-  });
-  grip.addEventListener('pointermove', (ev) => {
-    if (!resizing) return;
-    const vw = globalThis.innerWidth || 1024, vh = globalThis.innerHeight || 768;
-    const width = clamp(rw + ev.clientX - sx, 320, Math.min(860, vw - 16));
-    const height = clamp(rh + ev.clientY - sy, 220, Math.min(900, vh - 16));
-    panel.style.setProperty('--rh-damage-w', `${width}px`);
-    panel.style.height = `${height}px`;
-  });
-  const end = (ev) => {
-    if (!resizing) return;
-    resizing = false; panel.classList.remove('is-resizing'); grip.releasePointerCapture?.(ev.pointerId);
-    cfg.width = panel.offsetWidth; cfg.height = panel.offsetHeight; saveConfig();
-  };
-  grip.addEventListener('pointerup', end); grip.addEventListener('pointercancel', end);
-}
-
-function enableSimpleColumnResize(panel, cfg, kind, limits, prefix) {
-  panel.addEventListener('pointerdown', (ev) => {
+function enableDamageColumnResize(kind) {
+  const view = ensureDamageView(kind);
+  const spec = DAMAGE_COLUMNS[kind];
+  if (!spec || view.content.dataset.resizeBound) return;
+  view.content.dataset.resizeBound = '1';
+  view.content.addEventListener('pointerdown', (ev) => {
     const cell = ev.target.closest('[data-damage-col]');
-    if (!cell || !panel.contains(cell)) return;
+    if (!cell || !view.content.contains(cell)) return;
     const col = cell.dataset.damageCol;
-    if (!limits[col]) return;
+    if (!spec.limits[col]) return;
+    // Resize from the divider on the cell's right edge — starting in the text area used to make the
+    // whole header a handle and made the movement feel reversed.
     const rect = cell.getBoundingClientRect();
     if (ev.clientX < rect.right - 12) return;
     const startX = ev.clientX;
-    const startWidth = Math.max(limits[col][0], rect.width);
+    const startWidth = Math.max(spec.limits[col][0], rect.width);
     const move = (e) => {
-      const width = clamp(startWidth + e.clientX - startX, limits[col][0], limits[col][1]);
-      panel.style.setProperty(`${prefix}${col}`, `${width}px`);
+      const width = clamp(startWidth + (e.clientX - startX), spec.limits[col][0], spec.limits[col][1]);
+      view.content.style.setProperty(`${spec.prefix}${col}`, `${width}px`);
     };
     const end = (e) => {
       cell.releasePointerCapture?.(e.pointerId);
       cell.removeEventListener('pointermove', move);
       cell.removeEventListener('pointerup', end);
       cell.removeEventListener('pointercancel', end);
-      const width = clamp(Math.round(cell.getBoundingClientRect().width), limits[col][0], limits[col][1]);
-      cfg.columnWidths = { ...(cfg.columnWidths || {}), [col]: width };
-      saveConfig();
-    };
-    cell.setPointerCapture?.(ev.pointerId);
-    cell.addEventListener('pointermove', move);
-    cell.addEventListener('pointerup', end);
-    cell.addEventListener('pointercancel', end);
-    ev.preventDefault(); ev.stopPropagation();
-  });
-}
-
-function placeSimpleDamageWindow(panel, cfg, offsetX = 0, offsetY = 0) {
-  if (!panel) return;
-  const vw = globalThis.innerWidth || 1024, vh = globalThis.innerHeight || 768;
-  const w = panel.offsetWidth || cfg.width || 420;
-  const hgt = panel.offsetHeight || 260;
-  const x = cfg.x == null ? Math.max(8, vw - w - 16 - offsetX) : cfg.x;
-  const y = cfg.y == null ? Math.max(8, vh - hgt - 20 - offsetY) : cfg.y;
-  panel.style.left = `${clamp(x, 8, Math.max(8, vw - w - 8))}px`;
-  panel.style.top = `${clamp(y, 8, Math.max(8, vh - hgt - 8))}px`;
-}
-
-function enableDamageColumnResize() {
-  if (!damageEls.table || damageEls.table.dataset.resizeBound) return;
-  damageEls.table.dataset.resizeBound = '1';
-  const cols = ['name', 'current', 'total', 'types', 'effects'];
-  const mins = { name: 100, current: 52, total: 52, types: 96, effects: 140 };
-  const maxs = { name: 360, current: 180, total: 180, types: 360, effects: 520 };
-  damageEls.table.addEventListener('pointerdown', (ev) => {
-    const cell = ev.target.closest('.rh-damage-head-row [data-damage-col]');
-    if (!cell || !damageEls.table.contains(cell)) return;
-    const col = cell.dataset.damageCol;
-    if (!cols.includes(col)) return;
-    // Resize from the divider on the cell's right edge. Starting in the text
-    // area used to make the whole header behave like a handle and made the
-    // movement feel reversed when the pointer was not on the divider.
-    const rect = cell.getBoundingClientRect();
-    if (ev.clientX < rect.right - 12) return;
-    const startX = ev.clientX;
-    const startWidth = Math.max(mins[col], rect.width);
-    const move = (e) => {
-      const width = clamp(startWidth + (e.clientX - startX), mins[col], maxs[col]);
-      damageRoot.style.setProperty(`--rh-damage-col-${col}`, `${width}px`);
-    };
-    const end = (e) => {
-      cell.releasePointerCapture?.(e.pointerId);
-      cell.removeEventListener('pointermove', move);
-      cell.removeEventListener('pointerup', end);
-      cell.removeEventListener('pointercancel', end);
-      const width = clamp(Math.round(cell.getBoundingClientRect().width), mins[col], maxs[col]);
-      state.cfg.damageWindow.windows.operators.columnWidths = { ...(state.cfg.damageWindow.windows.operators.columnWidths || {}), [col]: width };
+      const width = clamp(Math.round(cell.getBoundingClientRect().width), spec.limits[col][0], spec.limits[col][1]);
+      damageCfg(kind).columnWidths = { ...(damageCfg(kind).columnWidths || {}), [col]: width };
       saveConfig();
     };
     cell.setPointerCapture?.(ev.pointerId);
@@ -1477,29 +1540,28 @@ function enableDamageColumnResize() {
   });
 }
 
-function showDamageWindow() {
-  if (damageMounted) return;
-  if (!damageRoot) buildDamageWindow();
-  if (!playerDamageRoot) ({ panel: playerDamageRoot, els: playerDamageEls } = buildSimpleDamageWindow('players', '玩家伤害', '玩家伤害统计'));
-  if (!enemyDamageRoot) ({ panel: enemyDamageRoot, els: enemyDamageEls } = buildSimpleDamageWindow('enemies', '敌人伤害', '敌人伤害统计'));
-  document.body.append(damageRoot);
-  document.body.append(playerDamageRoot, enemyDamageRoot);
-  damageMounted = true;
-  state.cfg.damageWindow.visible = true;
-  damageWindowPlace();
-  placeSimpleDamageWindow(playerDamageRoot, state.cfg.damageWindow.windows.players, 260, 0);
-  placeSimpleDamageWindow(enemyDamageRoot, state.cfg.damageWindow.windows.enemies, 0, 300);
-  renderDamage();
-  syncMenu();
+/** Re-show the windows the config says float (called when the overlay appears again). */
+function restoreDamageWindows() {
+  for (const kind of DAMAGE_KINDS) if (damageIsPopped(kind)) mountDamageView(kind);
 }
 
-function hideDamageWindow() {
-  if (!damageMounted) return;
-  state.cfg.damageWindow.visible = false;
-  damageRoot?.remove(); playerDamageRoot?.remove(); enemyDamageRoot?.remove();
-  damageMounted = false;
-  saveConfig();
-  syncMenu();
+/** Detach the floating windows with the overlay; the 收回 state itself stays in the config. */
+function hideDamageWindows() {
+  for (const kind of DAMAGE_KINDS) damageView[kind]?.window?.remove();
+}
+
+/** 恢复默认: all three tables back into the 伤害 page with the default position, size and columns. */
+function resetDamageLayout() {
+  for (const kind of DAMAGE_KINDS) {
+    const view = damageView[kind];
+    if (!view) continue;
+    view.window?.remove();
+    view.window = null;
+    const spec = DAMAGE_COLUMNS[kind];
+    if (spec) for (const col of Object.keys(spec.limits)) view.content.style.removeProperty(`${spec.prefix}${col}`);
+  }
+  for (const kind of DAMAGE_KINDS) mountDamageView(kind);
+  syncDamageTabs();
 }
 
 function operatorDamageRows() {
@@ -1519,34 +1581,46 @@ function enemyDamageRows() {
 }
 
 function renderPlayerDamagePanel(players) {
-  if (!playerDamageEls.body) return;
-  playerDamageEls.round.textContent = state.damage.round == null ? '等待战斗' : `第 ${state.damage.round} 回合`;
-  playerDamageEls.summary.textContent = players.length
-    ? `本回合 ${formatDamageNumber(players.reduce((n, p) => n + p.current, 0))} · 全局 ${formatDamageNumber(players.reduce((n, p) => n + p.total, 0))}`
+  const panel = damageView.players?.els;
+  if (!panel?.body) return;
+  panel.round.textContent = state.damage.round == null ? '等待战斗' : `第 ${state.damage.round} 回合`;
+  panel.summary.textContent = players.length
+    ? `本回合 ${formatDamageNumber(players.reduce((n, p) => n + p.current, 0))} · 全局累计 ${formatDamageNumber(players.reduce((n, p) => n + p.total, 0))}`
     : '等待玩家伤害数据…';
-  if (!players.length) { playerDamageEls.body.replaceChildren(h('div', { class: 'rh-damage-empty', text: '尚未收到玩家伤害事件' })); return; }
+  panel.foot.textContent = state.damage.serverDmg
+    ? '队友伤害由服务器每回合结算后同步（Boss 轮实时）'
+    : '本服务器未启用队友伤害补丁：队友数据仅在本局结算时可见';
+  if (!players.length) { panel.body.replaceChildren(h('div', { class: 'rh-damage-empty', text: '尚未收到玩家伤害事件' })); return; }
   const head = h('div', { class: 'rh-damage-player-row rh-damage-player-head' },
     ...[['name', '玩家'], ['current', '本回合'], ['total', '全局累计'], ['types', '类型']]
       .map(([col, text]) => h('span', { class: 'rh-damage-col-head', 'data-damage-col': col, text, title: '拖动调整列宽' })));
-  playerDamageEls.body.replaceChildren(head, ...players.map((player) => h('div', { class: `rh-damage-player-row ${player.current > 0 ? 'is-active' : ''}` },
-    h('span', { class: 'rh-damage-player-name', text: player.name }),
-    h('span', { class: 'rh-damage-num', text: formatDamageNumber(player.current) }),
-    h('span', { class: 'rh-damage-num', text: formatDamageNumber(player.total) }),
-    h('span', { class: 'rh-damage-types', text: damageTypesForDisplay(player) }),
-  )));
+  panel.body.replaceChildren(head, ...players.map((player) => {
+    const me = player.id === state.playerId;
+    const unknown = !me && player.current <= 0 && player.total <= 0;
+    return h('div', {
+      class: `rh-damage-player-row ${player.current > 0 ? 'is-active' : ''}${me ? ' is-me' : ''}`,
+      title: me ? '你：本地实时统计' : player.settled ? '本局结算数据' : '服务器按回合结算同步',
+    },
+      h('span', { class: 'rh-damage-player-name', text: me ? `${player.name}（你）` : player.name }),
+      h('span', { class: 'rh-damage-num', text: unknown ? '—' : formatDamageNumber(player.current) }),
+      h('span', { class: 'rh-damage-num', text: unknown ? '—' : formatDamageNumber(player.total) }),
+      h('span', { class: 'rh-damage-types', text: damageTypesForDisplay(player) }),
+    );
+  }));
 }
 
 function renderEnemyDamagePanel(enemies) {
-  if (!enemyDamageEls.body) return;
-  enemyDamageEls.round.textContent = state.damage.round == null ? '等待战斗' : `第 ${state.damage.round} 回合`;
-  enemyDamageEls.summary.textContent = enemies.length
+  const panel = damageView.enemies?.els;
+  if (!panel?.body) return;
+  panel.round.textContent = state.damage.round == null ? '等待战斗' : `第 ${state.damage.round} 回合`;
+  panel.summary.textContent = enemies.length
     ? `本回合 ${formatDamageNumber(enemies.reduce((n, e) => n + e.current, 0))} · 全局 ${formatDamageNumber(enemies.reduce((n, e) => n + e.total, 0))}`
     : '等待敌方伤害数据…';
-  if (!enemies.length) { enemyDamageEls.body.replaceChildren(h('div', { class: 'rh-damage-empty', text: '尚未收到敌方伤害事件' })); return; }
+  if (!enemies.length) { panel.body.replaceChildren(h('div', { class: 'rh-damage-empty', text: '尚未收到敌方伤害事件' })); return; }
   const head = h('div', { class: 'rh-damage-row rh-damage-head-row' },
     ...[['name', '敌人'], ['current', '本回合'], ['total', '全局'], ['types', '伤害类型'], ['targets', '受伤干员']]
       .map(([col, text]) => h('span', { class: 'rh-damage-col-head', 'data-damage-col': col, text, title: '拖动调整列宽' })));
-  enemyDamageEls.body.replaceChildren(head, ...enemies.map((enemy) => {
+  panel.body.replaceChildren(head, ...enemies.map((enemy) => {
     const details = [...enemy.targets.values()].sort((a, b) => b.current - a.current).slice(0, 8)
       .map((target) => `${target.name} ${formatDamageNumber(target.current)}`).join('；') || '—';
     return h('div', { class: `rh-damage-row ${enemy.current > 0 ? 'is-active' : ''}` },
@@ -1560,20 +1634,20 @@ function renderEnemyDamagePanel(enemies) {
 }
 
 function renderDamage() {
-  if (!damageMounted || !damageEls.table) return;
+  const op = damageView.operators?.els;
+  if (!root || !op?.table) return;
   const d = state.damage;
   const rows = operatorDamageRows();
   const allCurrent = rows.reduce((sum, rec) => sum + rec.current, 0) + d.unattributed.current;
   const allTotal = rows.reduce((sum, rec) => sum + rec.total, 0) + d.unattributed.total;
-  damageEls.round.textContent = d.round == null ? '等待战斗' : `第 ${d.round} 回合`;
-  damageEls.summary.textContent = d.round == null
+  op.round.textContent = d.round == null ? '等待战斗' : `第 ${d.round} 回合`;
+  op.summary.textContent = d.round == null
     ? '等待战斗事件；进入战斗后这里会实时更新。'
     : `本回合 ${formatDamageNumber(allCurrent)} · 全局 ${formatDamageNumber(allTotal)} · ${rows.length} 名干员`;
-  const players = playerDamageRows();
-  renderPlayerDamagePanel(players);
+  renderPlayerDamagePanel(playerDamageRows());
   renderEnemyDamagePanel(enemyDamageRows());
   if (!rows.length && !d.unattributed.current && !d.unattributed.total) {
-    damageEls.table.replaceChildren(h('div', { class: 'rh-damage-empty', text: '尚未收到干员伤害事件' }));
+    op.table.replaceChildren(h('div', { class: 'rh-damage-empty', text: '尚未收到干员伤害事件' }));
   } else {
     const head = h('div', { class: 'rh-damage-row rh-damage-head-row' },
       ...[['name', '干员'], ['current', '本回合'], ['total', '全局'], ['types', '伤害类型'], ['effects', '增益 / 减益']]
@@ -1592,13 +1666,16 @@ function renderDamage() {
       h('span', { class: 'rh-damage-types', text: damageTypesForDisplay(d.unattributed) }),
       h('span', { class: 'rh-damage-effects', text: '协议未提供来源' }),
     ));
-    damageEls.table.replaceChildren(head, ...body);
+    op.table.replaceChildren(head, ...body);
   }
   const team = [...d.teamEffects.values()].filter((e) => e.active || now() - e.endedAt < 8000).slice(0, 8);
-  damageEls.effects.replaceChildren(...(team.length ? [
+  op.effects.replaceChildren(...(team.length ? [
     h('div', { class: 'rh-damage-team-title', text: '全队效果' }),
     h('div', { class: 'rh-damage-team-list', text: team.map(effectText).join('；') }),
   ] : []));
+  cardSub('damage', d.round == null
+    ? (state.cfg.paused ? '已暂停' : '等待战斗')
+    : `本回合 ${formatDamageNumber(allCurrent)} · ${rows.length} 名干员`);
 }
 
 function buildUi() {
@@ -1625,8 +1702,9 @@ function buildUi() {
       scheduleRender('all');
       syncMenu();
     }),
-    menuRow('rh-menu-damage', '伤害统计窗口', !!state.cfg.damageWindow.visible, () => {
-      if (damageMounted) hideDamageWindow(); else showDamageWindow();
+    menuRow('rh-menu-damage', '伤害统计', state.cfg.page === 'damage', () => {
+      closeMenu();
+      setPage('damage');
       syncMenu();
     }),
     menuRow('rh-menu-settings', '打开设置', false, () => {
@@ -1750,7 +1828,7 @@ function buildUi() {
       }),
       sliderRow('rh-damage-font-slider', '伤害文字', 0.8, 1.5, 0.05, state.cfg.damageWindow.fontScale, (v) => {
         state.cfg.damageWindow.fontScale = v;
-        for (const panel of [damageRoot, playerDamageRoot, enemyDamageRoot]) if (panel) panel.style.setProperty('--rh-damage-scale', String(v));
+        for (const host of damageHosts()) host.style.setProperty('--rh-damage-scale', String(v));
         saveConfig();
       }),
       h('div', { class: 'rh-set-caption', text: '首页显示这些页面' }),
@@ -1758,26 +1836,23 @@ function buildUi() {
       h('button', {
         class: 'rh-reset', text: '恢复默认位置与外观',
         onclick: () => {
-          const wasDamageMounted = damageMounted;
-          if (wasDamageMounted) hideDamageWindow();
-          else { damageRoot = null; playerDamageRoot = null; enemyDamageRoot = null; damageEls = {}; playerDamageEls = {}; enemyDamageEls = {}; }
           localStorage.removeItem(STORAGE_KEY);
           Object.assign(state.cfg, {
             ...DEFAULTS,
             show: { ...DEFAULTS.show },
-            damageWindow: { ...DEFAULTS.damageWindow, windows: { ...DEFAULTS.damageWindow.windows } },
+            damageWindow: {
+              ...DEFAULTS.damageWindow,
+              popped: { ...DEFAULTS.damageWindow.popped },
+              windows: { ...DEFAULTS.damageWindow.windows },
+            },
             folded: {},
             logExpanded: [],
           });
+          resetDamageLayout();
           applyConfigToDom();
           setPage('home');
-          for (const panel of [damageRoot, playerDamageRoot, enemyDamageRoot]) if (panel) {
-            panel.style.removeProperty('height');
-            panel.style.setProperty('--rh-damage-scale', String(DEFAULTS.damageWindow.fontScale));
-          }
+          for (const host of damageHosts()) host.style.setProperty('--rh-damage-scale', String(DEFAULTS.damageWindow.fontScale));
           placeInitial();
-          if (state.mounted && state.cfg.damageWindow.visible && !damageMounted) showDamageWindow();
-          if (damageMounted) { damageWindowPlace(); renderDamage(); }
           scheduleRender('all');
         },
       }),
@@ -1871,9 +1946,11 @@ function buildUi() {
   // sits above the pages so an incoming invitation is seen no matter which page is open
   const inviteToast = h('div', { class: 'rh-invite-toast', id: 'rh-invite-toast', hidden: true });
 
+  const pageDamage = buildDamagePage();
+
   const body = h('div', { class: 'rh-body' },
     inviteToast,
-    pageHome, pageInvite, pageMatch, pageServer, pagePerf, secLog, secSettings, secAbout,
+    pageHome, pageInvite, pageMatch, pageDamage, pageServer, pagePerf, secLog, secSettings, secAbout,
   );
 
   root.append(header, body, footer, grip);
@@ -1885,13 +1962,17 @@ function buildUi() {
     inviteToast: $('#rh-invite-toast', root),
     perfGrid: $('#rh-perf-grid', root), logBody: $('#rh-log', root),
     warnBadge: $('#rh-warn-badge', root),
+    damagePop: $('#rh-damage-pop', root),
     cards,
     pages: {
-      home: pageHome, invite: pageInvite, match: pageMatch, server: pageServer,
+      home: pageHome, invite: pageInvite, match: pageMatch, damage: pageDamage, server: pageServer,
       perf: pagePerf, log: secLog, settings: secSettings, about: secAbout,
     },
   };
 
+  // the three damage tables: dock them (their windows come back for whatever the config popped)
+  for (const kind of DAMAGE_KINDS) mountDamageView(kind);
+  syncDamageTabs();
   syncMenu();
   applyConfigToDom();
   return root;
@@ -1923,6 +2004,7 @@ function buildPage(id, label, bodyKids, extraHeadKids) {
 const CARD_ICONS = {
   invite: [['circle', { cx: '6', cy: '5.4', r: '2.5' }], ['path', { d: 'M1.6 13.6c.5-2.6 2.3-4 4.4-4s3.9 1.4 4.4 4' }], ['path', { d: 'M12.3 5.1v4.2M10.2 7.2h4.2' }]],
   match: [['circle', { cx: '8', cy: '8', r: '5.4' }], ['circle', { cx: '8', cy: '8', r: '1.3' }], ['path', { d: 'M8 .8v2.1M8 13.1v2.1M.8 8h2.1M13.1 8h2.1' }]],
+  damage: [['path', { d: 'M8 1.7 9.4 6.6 14.3 8 9.4 9.4 8 14.3 6.6 9.4 1.7 8 6.6 6.6Z' }]],
   server: [['rect', { x: '1.8', y: '2.4', width: '12.4', height: '4.6', rx: '1.3' }], ['rect', { x: '1.8', y: '9', width: '12.4', height: '4.6', rx: '1.3' }], ['path', { d: 'M4.2 4.7h.01M4.2 11.3h.01' }]],
   perf: [['path', { d: 'M2.6 13.4V9.6M6.3 13.4V6.4M10 13.4V8.2M13.7 13.4V3' }]],
   log: [['path', { d: 'M2.8 3.6h10.4M2.8 8h10.4M2.8 12.4h6.6' }]],
@@ -1985,7 +2067,7 @@ function applyConfigToDom() {
   const iv = i?.parentElement?.querySelector('.rh-set-val'); if (iv) iv.textContent = state.cfg.idleOpacity.toFixed(2);
   const df = $('#rh-damage-font-slider', root); if (df) df.value = state.cfg.damageWindow.fontScale;
   const dfv = df?.parentElement?.querySelector('.rh-set-val'); if (dfv) dfv.textContent = `${Number(state.cfg.damageWindow.fontScale).toFixed(2)}x`;
-  for (const panel of [damageRoot, playerDamageRoot, enemyDamageRoot]) if (panel) panel.style.setProperty('--rh-damage-scale', String(state.cfg.damageWindow.fontScale));
+  for (const host of damageHosts()) host.style.setProperty('--rh-damage-scale', String(state.cfg.damageWindow.fontScale));
   syncToggles();
   syncChips();
   syncWarnBadge();
@@ -2016,6 +2098,7 @@ function setPage(id, { save = true } = {}) {
   else if (id === 'log') scheduleRender('log');
   else if (id === 'server') scheduleRender('server');
   else if (id === 'match') scheduleRender('match');
+  else if (id === 'damage') { scheduleRender('damage'); syncDamageTabs(); }
   else if (id === 'perf') scheduleRender('perf');
   if (id === 'home') renderHome();
   if (els.body) els.body.scrollTop = 0;
@@ -2049,7 +2132,7 @@ function syncToggles() {
 }
 
 function syncChips() {
-  for (const chip of root.querySelectorAll('.rh-chip')) {
+  for (const chip of root.querySelectorAll('.rh-chip[data-filter]')) {
     chip.classList.toggle('is-on', chip.dataset.filter === state.cfg.logFilter);
   }
 }
@@ -2253,6 +2336,10 @@ function renderHome() {
   cardSub('match', room?.code
     ? `${room.code} · ${pub?.phase ? phaseName(pub.phase) : room.mode === 'solo' ? '独立' : '同盟'}`
     : pub?.phase ? phaseName(pub.phase) : '未在房间');
+
+  cardSub('damage', state.damage.round == null
+    ? (state.cfg.paused ? '已暂停' : '等待战斗')
+    : `本回合 ${formatDamageNumber(operatorDamageRows().reduce((n, rec) => n + rec.current, 0) + state.damage.unattributed.current)}`);
 
   cardSub('invite', state.invites.length
     ? `${state.invites.length} 条新邀请`
@@ -2784,7 +2871,7 @@ function attachNet() {
         const prevPhase = state.match?.phase;
         state.match = msg;
         parseDamageFrame(msg);
-        updateDamagePlayers(msg.players, false, msg.battleId);
+        mergePublicPlayerDamage(msg);
         if (msg.phase && msg.phase !== prevPhase) {
           const round = msg.lastRound ? ` · 第 ${msg.round}/${msg.lastRound} 回合` : '';
           pushLog('state', `阶段 → ${phaseName(msg.phase)}`, `${msg.modeId || ''}${round}`);
@@ -2832,7 +2919,9 @@ function attachNet() {
       }
       case 'm.private':
         ensureDamagePlayer({ playerId: msg.playerId, name: msg.name });
-        updateDamagePlayers([{ playerId: msg.playerId, name: msg.name, stats: msg.stats }]);
+        // stats.dmgDealt is the match's cumulative damage — a 全局累计 floor (1.7.0: this used to be
+        // merged as a per-round value and inflated both columns every round)
+        mergeReportedPlayerDamage({ playerId: msg.playerId, name: msg.name }, { total: msg.stats?.dmgDealt }, null, { allowStopped: true });
         updateDamageUnits(msg.board || msg.units || [], 'private', { playerId: msg.playerId });
         parseTeamEffects(msg.effects);
         break;
@@ -3159,11 +3248,7 @@ function enableDrag() {
     const maxLeft = Math.max(8, vw - root.offsetWidth - 8);
     root.style.left = `${clamp(root.offsetLeft, 8, maxLeft)}px`;
     root.style.top = `${clamp(root.offsetTop, 8, Math.max(8, vh - root.offsetHeight - 8))}px`;
-    if (damageMounted) {
-      damageWindowPlace();
-      placeSimpleDamageWindow(playerDamageRoot, state.cfg.damageWindow.windows.players, 260, 0);
-      placeSimpleDamageWindow(enemyDamageRoot, state.cfg.damageWindow.windows.enemies, 0, 300);
-    }
+    for (const kind of DAMAGE_KINDS) if (damageView[kind]?.window?.isConnected) placeDamageWindow(kind);
     placeRecall();
   });
 }
@@ -3255,7 +3340,7 @@ function showOverlay() {
   hideRecall();
   document.body.append(root);
   state.mounted = true;
-  if (state.cfg.damageWindow.visible) showDamageWindow();
+  restoreDamageWindows();
   placeInitial();
   if (!state._dragBound) { enableDrag(); state._dragBound = true; }
   scheduleRender('all');
@@ -3286,10 +3371,7 @@ function renderOnce(what) {
 function hideOverlay() {
   if (!state.mounted) return;
   root.remove();
-  if (damageMounted) {
-    damageRoot?.remove(); playerDamageRoot?.remove(); enemyDamageRoot?.remove();
-    damageMounted = false;
-  }
+  hideDamageWindows();
   state.mounted = false;
   if (state._netRetry) {
     globalThis.clearInterval(state._netRetry);
@@ -3353,7 +3435,6 @@ document.addEventListener('keydown', (ev) => {
 // ---------------------------------------------------------------------------------------------
 
 root = buildUi();
-damageRoot = buildDamageWindow();
 showOverlay();
 
 /** Exposed for other mods / debugging. */

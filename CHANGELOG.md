@@ -2,6 +2,25 @@
 
 All notable changes to this project. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] - 2026-10-16
+
+### Added
+
+- **「伤害」页**：干员 / 玩家 / 敌人三张统计表整合进新页面（卡片排在「本局」之后），页内标签切换，不再是三个各自飘着的窗口。页头「独立窗口」把当前这张表弹成独立悬浮窗（拖动 / 缩放 / 折叠照旧），窗口 `×` 或停靠位上的「收回」放回页面——**同一份数据、同一个滚动位置与列宽**，两边不会重复渲染；旧的窗口 id（`#rh-damage-window`、`#rh-players-damage-window`、`#rh-enemies-damage-window`）作为弹出版保留。
+- **队友伤害实时同步（服务端补丁，可选）**：`m.public` 玩家行新增 `hudDmg: { round, dmg, total }`——普通回合在结算后广播本回合伤害与整场累计，Boss 轮约每秒刷新。HUD 检测到该字段即实时显示队友两列，玩家表页脚注明数据来源（未打补丁时显示「仅结算可见」）。补丁见 `server-patch/reality-hud-damage.patch` 与 [docs/server-patch.md](docs/server-patch.md)。
+
+### Fixed
+
+- **全局累计被重复计数**：`m.private.stats.dmgDealt` 与 `m.result` 给的是**整场累计**，旧合并逻辑按「每回合差值」处理——每回合都把累计值再计一次，本回合与全局两列同时虚高。现在累计值只作为全局列的下限，绝不参与本回合计算。
+- **跨回合错帧**：`hudDmg` 带回合戳，只有戳与当前回合一致时才计入本回合，飞行中的旧帧不会再落进新回合。
+
+### Changed
+
+- 菜单「伤害统计窗口」改为「伤害统计」，点按打开伤害页（行状态跟随当前页面）。
+- 配置：`damageWindow.visible` 由 `popped.{operators,players,enemies}`（各自是否独立）与 `tab`（当前标签）替代；旧存档一律默认停靠在伤害页，不再自动弹出三个窗口。
+- 设置页「伤害文字」滑条同时作用于伤害页与弹出的独立窗口。
+- 测试：`npm run test:damage` 重写为伤害页自测（26 项：标签 / 停靠 / 弹窗归位 / 累计合并 / 跨回合戳）；冒烟 60 → 67，手机 8 → 10。
+
 ## [1.6.0] - 2026-10-16
 
 ### Added

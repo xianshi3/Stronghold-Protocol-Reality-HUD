@@ -1,24 +1,30 @@
-# 服务端补丁（可选）：在线名单 + 一键邀请
+# 服务端补丁（可选）
 
-Reality HUD 的核心功能（延迟、服务状态、本局、性能、日志、**免密钥邀请链接**）**不需要任何服务端改动**，在原版 Stronghold Protocol 上即装即用。
+Reality HUD 的核心功能（延迟、服务状态、本局、性能、日志、**伤害页**、**免密钥邀请链接**）**不需要任何服务端改动**，在原版 Stronghold Protocol 上即装即用。
 
-本补丁只是可选增强：给服务器加上「在线名单」`GET /api/players` 与「定向邀请」`room.invite` / `room.invited`，让 HUD 能列出服务器上所有在线玩家并一键邀请。
+两个补丁都是可选增强，互相独立、可只打一个（改动文件不重叠，应用顺序无关）：
+
+| 补丁 | 给什么 | 规模 |
+|---|---|---|
+| `reality-hud-invite.patch` | 在线名单 + 一键邀请 | 4 个代码文件 + 1 个文档 |
+| `reality-hud-damage.patch` | 队友伤害实时同步（`m.public` 玩家行 `hudDmg`） | 3 个代码文件 + 2 个文档 + 1 个测试 |
 
 ## 应用
 
-补丁基于上游 [Stronghold Protocol](https://github.com/sganggs/Stronghold-Protocol) **v0.2.6** 生成（`server-patch/reality-hud-invite.patch`，共 4 个代码文件 + 1 个文档）：
+两个补丁都基于上游 [Stronghold Protocol](https://github.com/sganggs/Stronghold-Protocol) **v0.2.6** 生成：
 
 ```bash
 cd Stronghold-Protocol            # 游戏仓库，v0.2.6
 git apply reality-hud-invite.patch
+git apply reality-hud-damage.patch
 # 验证后重启服务器使新代码生效：
 systemctl restart stronghold      # 会断开所有连接、结束内存中的对局，请挑空闲时段
 curl -s http://127.0.0.1:3000/api/players   # 应返回 {"ok":true,"players":[...]}
 ```
 
-反向撤销：`git apply -R reality-hud-invite.patch`。
+反向撤销：`git apply -R reality-hud-damage.patch`（invite 版同理）。
 
-## 补丁内容
+## 补丁内容 · 在线名单 + 一键邀请
 
 | 文件 | 改动 |
 |---|---|
@@ -28,13 +34,27 @@ curl -s http://127.0.0.1:3000/api/players   # 应返回 {"ok":true,"players":[..
 | `server/http/routes.js` | `GET /api/players`：返回 `{ ok, players: [{ id, name, inRoom, inMatch }] }`，永不缓存 |
 | `docs/design/network.md` | 协议文档同步 |
 
-## 安全设计
+## 补丁内容 · 队友伤害同步
 
-- **房间码不进名单**：房间码是进房钥匙；`/api/players` 只含昵称、`playerId` 与状态布尔值，不含房间码、token、地址。房间码只经服务端定向推给被邀请的会话本人。
-- **限流**：`room.invite` 走每连接重桶（与 `room.loadout` 等同级），刷不出每秒几十条邀请。
-- **向后兼容**：原版客户端收到 `room.invited` 会当作未知推送静默忽略（客户端 `_emit` 直接透传给监听器，无监听器即无副作用）；不打补丁的服务器上，HUD 检测到 `/api/players` 404 后自动隐藏名单并停止请求。
+| 文件 | 改动 |
+|---|---|
+| `server/match/match/views.js` | `_hudDmgView(ps)`：组装 `m.public.players[].hudDmg { round, dmg, total }` —— 本回合伤害（结算盖章 + Boss 轮仍在进行的客户端战场 `f.bossBy` 实时分摊）与整场累计（`stats.dmgDealt` + 尚未结算的 Boss 实时份额，两者绝不重复）；`_hudCreditDmg(ps, d)`：结算盖章；`publicView` 玩家行加 `hudDmg` 字段 |
+| `server/match/PlayerState.js` | `hudRound` / `hudDmg` 字段初始化 |
+| `server/match/match/settle.js` | 普通回合结算（本场结果 + 联防分摊）后盖章本回合伤害 |
+| `server/match/match/bossRounds.js` | `_finishFinal` 把 Boss 伤害写进 `stats.dmgDealt` 的同刻盖章（该伤害自此只算一次） |
+| `docs/design/network.md`、`docs/META.md` | 协议文档同步 |
+| `test/match/reality-hud-damage.test.js` | 3 例：视图数学（回合戳 / 实时份额 / 不重复）、普通回合盖章与回合切换清零、Boss 轮实时值与结算不重复计数 |
+
+## 语义与安全
+
+- **只多一个字段**：不新增消息类型、不改任何现有字段。原版客户端对它一无所知（宽松存储，多余字段无害）；HUD 检测到 `hudDmg` 才把队友从「结算可见」升级为实时。
+- **回合戳防错帧**：`dmg` 带 `round`；客户端只在与当前回合同步时消费它，飞行中的旧帧不会落进下一回合的 本回合。`total` 只作全局累计的下限（HUD 取 max），绝不重复计数。
+- **Boss 轮实时值**：来自客户端上报的共享血量池分摊（`f.bossBy`），沿用原版 `_creditBoss` 的场地时钟预算封顶（反作弊不变）；最终仍以客户端 `b.result` 为准。
+- **不泄露新信息**：这些数字在 `m.result` 结算时本来就发给全员，补丁只是把它提前到回合结算时（Boss 轮约每秒）——没有房间码、token 或任何私密视图。
 
 ## 验证
 
-- `node --test test/lobby-invite.test.js` —— 推送 relay、全部拒绝路径、限流、名单不含密钥（5 例）
-- `node hud-smoke.mjs http://127.0.0.1:3000` —— HUD 侧 40 项断言（含模拟 `room.invited` 横幅与旧服务器降级路径）
+- `node --test test/match/reality-hud-damage.test.js` —— 伤害补丁 3 例（视图数学 / 普通回合盖章 / Boss 轮实时与不重复计数）
+- `node --test test/lobby-invite.test.js` —— 邀请补丁 5 例
+- `node test/hud-smoke.mjs http://127.0.0.1:3000` —— HUD 侧 67 项断言（含伤害页、模拟 `room.invited` 横幅与旧服务器降级路径）
+- `node test/hud-damage.mjs` —— 伤害页 26 项断言（自带假服务器）
