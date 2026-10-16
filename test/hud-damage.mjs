@@ -352,6 +352,95 @@ ops7 = await operatorRows();
 check("带标记的空来源不吃队列（近战 300+25=325）",
   rowFor(ops7, "近战干员")?.[1] === "325", JSON.stringify(ops7));
 
+// ---- runtime ids resolve inside their own battlefield (v1.7.2, from Kriss-wq's PR #4) ----------
+// A sim event addresses a unit by its per-battle runtime id — a small integer that restarts every
+// battle and can equal some other unit's uid. The pre-1.7.2 lookup by record key hit whichever
+// uid-keyed record shared the number (「谁打都算我的」), and two battlefields reusing one number
+// made the first-registered record win. Both are checked here, plus 联防 (teammates help defend):
+// the helpers' fresh ids must credit the helpers' operators and players, never the leaker's.
+await emit({ t: "m.public", round: 8, phase: "COMBAT", lastRound: 14, players: [
+  { playerId: "p1", name: "玩家一" },
+  { playerId: "p2", name: "队友" },
+  { playerId: "p3", name: "小队长" },
+] });
+await emit({ t: "m.field", fieldId: "n:p_1", units: [
+  { id: 1, uid: 5, name: "甲干员", kind: "op", side: "ally", ownerId: "p1" },
+  { id: 5, uid: 9, name: "乙干员", kind: "op", side: "ally", ownerId: "p1" },
+  { id: 2, name: "靶子", kind: "enemy", side: "enemy" },
+] });
+await emit({ t: "b.ev", fieldId: "n:p_1", ev: [
+  ["dmg", 2, 100, "phys", null, 5],   // 乙干员的运行时 id 5 does not address 甲干员的 uid 5
+  ["dmg", 2, 50, "arts", null, 1],
+] });
+await wait();
+let ops8 = await operatorRows();
+check("运行时 id 撞 uid 不再串号：甲干员 50 法术、乙干员 100 物理",
+  rowFor(ops8, "甲干员")?.[1] === "50" && rowFor(ops8, "乙干员")?.[1] === "100", JSON.stringify(ops8));
+
+await emit({ t: "m.field", fieldId: "f2", units: [
+  { id: 7, uid: 21, name: "己方干员", kind: "op", side: "ally", ownerId: "p1" },
+  { id: 3, name: "甲敌", kind: "enemy", side: "enemy" },
+] });
+await emit({ t: "m.field", fieldId: "f3", units: [
+  { id: 7, uid: 22, name: "队友干员", kind: "op", side: "ally", ownerId: "p2" },
+  { id: 3, name: "乙敌", kind: "enemy", side: "enemy" },
+] });
+await emit({ t: "b.ev", fieldId: "f3", ev: [["dmg", 3, 200, "phys", null, 7]] });
+await wait();
+ops8 = await operatorRows();
+check("另一战场的同号 id 不落到本场：己方干员 0、队友干员 200",
+  rowFor(ops8, "己方干员")?.[1] === "0" && rowFor(ops8, "队友干员")?.[1] === "200", JSON.stringify(ops8));
+
+await emit({ t: "b.start", battleId: "7.8.62.u", fieldId: "u", kind: "unite", spec: { players: [
+  { playerId: "p2", units: [{ uid: 31, kind: "chess", chessId: "op_h1", name: "帮防甲" }] },
+  { playerId: "p3", units: [{ uid: 32, kind: "chess", chessId: "op_h2", name: "帮防乙" }] },
+] } });
+await emit({ t: "b.ev", fieldId: "u", ev: [
+  ["spawn", { id: 5, uid: 31, ownerId: "p2", name: "帮防甲", defId: "op_h1", kind: "op", side: "ally" }],
+  ["spawn", { id: 9, uid: 32, ownerId: "p3", name: "帮防乙", defId: "op_h2", kind: "op", side: "ally" }],
+  ["spawn", { id: 4, name: "联防敌", kind: "enemy", side: "enemy" }],
+] });
+await emit({ t: "b.ev", fieldId: "u", ev: [
+  ["dmg", 4, 100, "phys", null, 5],   // 帮防甲's runtime id 5 equals 甲干员's uid 5
+  ["dmg", 4, 50, "arts", null, 9],    // 帮防乙's runtime id 9 equals 乙干员's uid 9
+] });
+await wait();
+ops8 = await operatorRows();
+rows = await playerRows();
+check("联防：帮防队友的命中记在各自干员上（帮防甲 100、帮防乙 50，被帮防者的干员不动）",
+  rowFor(ops8, "帮防甲")?.[1] === "100" && rowFor(ops8, "帮防乙")?.[1] === "50"
+  && rowFor(ops8, "甲干员")?.[1] === "50" && rowFor(ops8, "乙干员")?.[1] === "100",
+  JSON.stringify(ops8));
+check("联防：玩家行各归各（玩家一 150、队友 300、小队长 50）",
+  rowFor(rows, "玩家一")[1] === "150" && rowFor(rows, "队友")[1] === "300" && rowFor(rows, "小队长")[1] === "50",
+  JSON.stringify(rows));
+
+// vanilla frames keep the attack-order guess, but only while it names exactly one attacker
+await emit({ t: "m.field", fieldId: "f4", units: [
+  { id: 1, uid: 41, name: "旧甲", kind: "op", side: "ally", ownerId: "p1" },
+  { id: 2, uid: 42, name: "旧乙", kind: "op", side: "ally", ownerId: "p1" },
+  { id: 9, name: "旧敌", kind: "enemy", side: "enemy" },
+] });
+await emit({ t: "b.ev", fieldId: "f4", ev: [
+  ["atk", 1, 9],
+  ["atk", 2, 9],
+  ["dmg", 9, 100, "phys"],
+] });
+await wait();
+ops8 = await operatorRows();
+check("无来源帧遇两个不同攻击者：不猜（旧甲/旧乙 0）",
+  rowFor(ops8, "旧甲")?.[1] === "0" && rowFor(ops8, "旧乙")?.[1] === "0", JSON.stringify(ops8));
+await emit({ t: "b.ev", fieldId: "f4", ev: [
+  ["atk", 1, 9],
+  ["atk", 1, 9],
+  ["dmg", 9, 100, "phys"],
+  ["dmg", 9, 100, "phys"],
+] });
+await wait();
+ops8 = await operatorRows();
+check("无来源帧只有一个攻击者：照常归属（旧甲 200、旧乙 0）",
+  rowFor(ops8, "旧甲")?.[1] === "200" && rowFor(ops8, "旧乙")?.[1] === "0", JSON.stringify(ops8));
+
 // ---- the menu row opens the page -------------------------------------------------------------
 await page.click("#rh-page-damage .rh-back");
 await wait();

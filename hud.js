@@ -51,7 +51,7 @@ const AUTHOR = Object.freeze({
   repoLabel: 'xianshi3/Stronghold-Protocol-Reality-HUD',
 });
 
-const MOD_VERSION = '1.7.1';
+const MOD_VERSION = '1.7.2';
 
 const DEFAULTS = {
   x: null,               // null = park it on the right edge (computed on first show)
@@ -292,6 +292,7 @@ const state = {
     round: null,
     battleId: null,
     units: new Map(),
+    unitIndex: new Map(), // (context, runtime id) -> record: battle events resolve inside their own field/battle
     players: new Map(),
     enemies: new Map(),
     teamEffects: new Map(),
@@ -414,10 +415,52 @@ function normalizeDamageType(type) {
   return DAMAGE_TYPE_TEXT[key] ? key : key.replace(/[^a-z0-9_\u4e00-\u9fff-]/g, '') || 'unknown';
 }
 
-function damageUnitKey(raw) {
+// ---------------------------------------------------------------------------------------------
+// unit identity
+//
+// A unit is addressed by two different ids: its board `uid` (stable for a whole match, unique
+// across players) and the battle's runtime id (UnitInfo `id` / sim events — small integers that
+// restart every battle and whose values can equal another unit's uid, e.g. during 联防 when the
+// helpers' units deploy with fresh ids). Records are keyed by uid when the unit has one, so the
+// board view and every battle of the same operator merge into one row; a per-context runtime
+// index maps (field/battle context, runtime id) to that record, so a battle event resolves to the
+// unit its sim actually used — never to the record that happens to share the number (v1.7.2,
+// from Kriss-wq's PR #4 attribution fix, reworked to keep the uid merge).
+// ---------------------------------------------------------------------------------------------
+
+const RUNTIME_SCOPE_SEP = '\u0000';
+
+function runtimeScopedKey(context, id) {
+  return `${context ?? ''}${RUNTIME_SCOPE_SEP}${String(id)}`;
+}
+
+/** A frame's battle context: its field when known (`field:n:p_1`, `field:u`), else its battle. */
+function damageFrameContext(frame) {
+  if (!frame || typeof frame !== 'object') return null;
+  const field = frame.fieldId ?? (frame.field && typeof frame.field === 'object' ? frame.field.fieldId : null);
+  if (field != null && String(field) !== '') return `field:${String(field)}`;
+  if (frame.battleId != null && String(frame.battleId) !== '') return `battle:${String(frame.battleId)}`;
+  return null;
+}
+
+function frameDamageContext(frame) {
+  if (frame && typeof frame === 'object' && 'damageContext' in frame) return frame.damageContext;
+  return damageFrameContext(frame);
+}
+
+function damageUnitKey(raw, ownerId = null, context = null) {
   if (raw == null) return '';
   if (typeof raw !== 'object') return String(raw);
-  return String(raw.uid ?? raw.unitId ?? raw.id ?? raw.defId ?? raw.name ?? '');
+  const uid = raw.uid ?? raw.unitUid;
+  if (uid != null && String(uid) !== '') return `uid:${String(uid)}`;
+  const runtimeId = raw.unitId ?? raw.id;
+  if (typeof runtimeId === 'number' && Number.isFinite(runtimeId)) {
+    return `id:${runtimeId}@${context ?? ''}`;
+  }
+  const defId = raw.defId ?? (typeof runtimeId === 'string' && runtimeId !== '' ? runtimeId : null);
+  if (defId != null && String(defId) !== '') return `def:${ownerId ?? ''}#${String(defId)}`;
+  if (raw.name != null && String(raw.name) !== '') return `def:${ownerId ?? ''}#${String(raw.name)}`;
+  return '';
 }
 
 function isOperatorRecord(rec) {
@@ -429,8 +472,15 @@ function isOperatorRecord(rec) {
 
 function emptyDamageTypes() { return Object.create(null); }
 
-function ensureDamageUnit(raw, defaults = {}) {
-  const key = damageUnitKey(raw) || damageUnitKey(defaults) || 'unknown';
+function ensureDamageUnit(raw, defaults = {}, context = null) {
+  const ownerIdOf = (source) => {
+    if (!source || typeof source !== 'object') return null;
+    const owner = source.ownerId ?? source.ownerPlayerId ?? source.playerId
+      ?? (source.owner && typeof source.owner === 'object' ? source.owner.playerId : null);
+    return owner != null ? String(owner) : null;
+  };
+  const ownerId = ownerIdOf(raw) ?? ownerIdOf(defaults);
+  const key = damageUnitKey(raw, ownerId, context) || damageUnitKey(defaults, ownerId, context) || 'unknown';
   let rec = state.damage.units.get(key);
   if (!rec) {
     rec = {
@@ -459,10 +509,15 @@ function ensureDamageUnit(raw, defaults = {}) {
   if (merged.skillIndex != null && Number.isFinite(Number(merged.skillIndex))) rec.skillIndex = Number(merged.skillIndex);
   if (merged.kind != null) rec.kind = String(merged.kind);
   if (merged.side != null) rec.side = String(merged.side);
-  const ownerId = merged.ownerId ?? merged.ownerPlayerId ?? merged.playerId
-    ?? (merged.owner && typeof merged.owner === 'object' ? merged.owner.playerId : null);
-  if (ownerId != null) rec.ownerId = String(ownerId);
+  if (ownerId != null) rec.ownerId = ownerId;
   if (rec.ownerId) ensureDamagePlayer({ playerId: rec.ownerId, name: merged.ownerName });
+  // Index the runtime id inside its battle context. Spawn/field frames overwrite earlier entries
+  // for the same (context, id), so the newest battle of a field wins and a uid value can never
+  // masquerade as a runtime id.
+  const runtimeId = merged.unitId ?? merged.id;
+  const indexable = (typeof runtimeId === 'number' && Number.isFinite(runtimeId) && runtimeId > 0)
+    || (typeof runtimeId === 'string' && runtimeId !== '');
+  if (indexable) state.damage.unitIndex.set(runtimeScopedKey(context, runtimeId), rec);
   const resolvedName = damageDataName(rec);
   if (resolvedName) rec.name = resolvedName;
   if (rec.name == null) rec.name = rec.id || rec.defId || key;
@@ -643,6 +698,7 @@ function resetDamageSession() {
   state.damage.round = null;
   state.damage.battleId = null;
   state.damage.units.clear();
+  state.damage.unitIndex.clear();
   state.damage.enemies.clear();
   state.damage.players.clear();
   state.damage.teamEffects.clear();
@@ -861,10 +917,10 @@ function recordEnemyDamage(source, target, amount, type) {
   }
 }
 
-function recordDamage(source, amount, type, targetId = null) {
+function recordDamage(source, amount, type, targetId = null, context = null) {
   const n = Number(amount);
   if (!Number.isFinite(n) || n <= 0) return;
-  const target = unitFromId(targetId);
+  const target = unitFromId(targetId, context);
   if (source && source.side === 'enemy') {
     if (target && target.side === 'ally') {
       recordEnemyDamage(source, target, n, type);
@@ -922,45 +978,57 @@ function mergeReportedDamage(raw, rec, sourceKey = 'stats', snapshotKey = null, 
   }
 }
 
-function updateDamageUnits(rawUnits, sourceKey = 'frame', owner = {}, snapshotKey = null, allowStopped = false) {
+function updateDamageUnits(rawUnits, sourceKey = 'frame', owner = {}, snapshotKey = null, allowStopped = false, context = null) {
   if (!Array.isArray(rawUnits)) return;
   for (const raw of rawUnits) {
     if (!raw || typeof raw !== 'object') continue;
     const rec = ensureDamageUnit(raw, {
       ...(sourceKey.startsWith('result') || sourceKey === 'unitStats' ? { kind: 'op', side: 'ally' } : {}),
       ...(owner.playerId ? { ownerId: owner.playerId } : {}),
-    });
+    }, context);
     mergeReportedDamage(raw, rec, sourceKey, snapshotKey, allowStopped);
   }
   scheduleRender('damage');
 }
 
-function unitFromId(id) {
+function unitFromId(id, context = null) {
   if (id == null) return null;
   const key = String(id);
-  return state.damage.units.get(key) || [...state.damage.units.values()].find((r) => r.id === key || r.uid === key) || null;
+  const index = state.damage.unitIndex;
+  if (context != null) {
+    // A frame with a known field/battle resolves only inside its own context: ids restart every
+    // battle, so another field's unit with the same number must never be reached.
+    return index.get(runtimeScopedKey(context, key)) || null;
+  }
+  // A frame without an identity (old servers, synthetic frames): accept a runtime id only when
+  // exactly one indexed unit carries it — never the uid-keyed record sharing the number.
+  const matches = [];
+  for (const [scoped, rec] of index) {
+    if (scoped.endsWith(`${RUNTIME_SCOPE_SEP}${key}`) && !matches.includes(rec)) matches.push(rec);
+  }
+  return matches.length === 1 ? matches[0] : null;
 }
 
-function registerAttack(sourceId, targetId) {
+function registerAttack(sourceId, targetId, context = null) {
   if (sourceId == null || targetId == null) return;
   // A target may have several projectiles in flight at once. Keep a short FIFO
   // instead of replacing the previous attacker; the old single entry caused a
   // later hit to be credited to whichever operator attacked last.
-  const source = unitFromId(sourceId);
-  const target = unitFromId(targetId);
+  const source = unitFromId(sourceId, context);
+  const target = unitFromId(targetId, context);
   const operatorAttack = isOperatorRecord(source) && (!target || target.side === 'enemy');
   const enemyAttack = source?.side === 'enemy' && (!target || target.side === 'ally');
   if (!operatorAttack && !enemyAttack) return;
-  const key = String(targetId);
+  const key = runtimeScopedKey(context, targetId);
   const pending = state.damage.attackSources.get(key) || [];
   pending.push({ source: String(sourceId), at: now() });
   while (pending.length > 16) pending.shift();
   state.damage.attackSources.set(key, pending);
 }
 
-function consumePendingAttack(targetId, sourceId) {
+function consumePendingAttack(targetId, sourceId, context = null) {
   if (targetId == null || sourceId == null) return;
-  const key = String(targetId);
+  const key = runtimeScopedKey(context, targetId);
   const pending = state.damage.attackSources.get(key);
   if (!pending) return;
   const source = String(sourceId);
@@ -970,12 +1038,12 @@ function consumePendingAttack(targetId, sourceId) {
   else state.damage.attackSources.delete(key);
 }
 
-function sourceForDamage(sourceId, targetId) {
+function sourceForDamage(sourceId, targetId, context = null) {
   if (sourceId != null) {
     // A modern damage tuple follows an older `atk` tuple in the same frame.
     // Consume that matching fallback entry so a later legacy hit cannot reuse it.
-    consumePendingAttack(targetId, sourceId);
-    const known = unitFromId(sourceId);
+    consumePendingAttack(targetId, sourceId, context);
+    const known = unitFromId(sourceId, context);
     if (!known) {
       // Without a field record we cannot prove that this source is one of our operators. Keep it
       // unattributed instead of manufacturing an ally record that could turn enemy damage into a
@@ -988,24 +1056,30 @@ function sourceForDamage(sourceId, targetId) {
     if (known.side === 'enemy') return known;
     return isOperatorRecord(known) ? known : null;
   }
-  const key = targetId == null ? null : String(targetId);
+  const key = targetId == null ? null : runtimeScopedKey(context, targetId);
   const pending = key == null ? null : state.damage.attackSources.get(key);
   if (!pending) return null;
   const at = now();
   while (pending.length && at - pending[0].at > 8000) pending.shift();
   if (!pending.length) { state.damage.attackSources.delete(key); return null; }
+  // Vanilla frames carry no source id: stand in with the queue only while it names exactly one
+  // attacker. Several different attackers in flight (a melee hit landing between a ranged shot
+  // and its projectile) or an unknown source stay unattributed instead of guessing.
+  const sources = [];
+  for (const entry of pending) if (entry && !sources.includes(entry.source)) sources.push(entry.source);
+  if (sources.length !== 1) { state.damage.attackSources.delete(key); return null; }
   const next = pending.shift();
   if (pending.length) state.damage.attackSources.set(key, pending);
   else state.damage.attackSources.delete(key);
-  const rec = unitFromId(next.source);
+  const rec = unitFromId(next.source, context);
   if (rec?.side === 'enemy') return rec;
   return isOperatorRecord(rec) ? rec : null;
 }
 
-function handleStatusEvent(unitId, key, active, raw = {}) {
+function handleStatusEvent(unitId, key, active, raw = {}, context = null) {
   // Status events can belong to enemies too. Only attach them after field metadata has identified
   // the unit; manufacturing an ally record here would later credit enemy damage to a fake operator.
-  const rec = unitFromId(unitId);
+  const rec = unitFromId(unitId, context);
   if (!rec) return;
   const payload = String(key) === 'skill' ? { ...raw, name: damageSkillName(rec, raw) || raw.name || raw.label || '技能' } : raw;
   ensureDamageEffect(rec, key, payload, active !== false);
@@ -1013,6 +1087,7 @@ function handleStatusEvent(unitId, key, active, raw = {}) {
 }
 
 function parseDamageEvent(event, frame = {}) {
+  const context = frameDamageContext(frame);
   if (Array.isArray(event)) {
     const kind = String(event[0] ?? '').toLowerCase();
     if (kind === 'spawn') {
@@ -1020,11 +1095,11 @@ function parseDamageEvent(event, frame = {}) {
       // their complete UnitInfo in b.ev. Register it before later damage
       // tuples in the same frame are resolved by source id.
       const unit = event[1];
-      if (unit && typeof unit === 'object') ensureDamageUnit(unit);
+      if (unit && typeof unit === 'object') ensureDamageUnit(unit, {}, context);
       return;
     }
     if (kind === 'atk' || kind === 'attack') {
-      if (event.length >= 3) registerAttack(event[1], event[2]);
+      if (event.length >= 3) registerAttack(event[1], event[2], context);
       return;
     }
     if (kind === 'dmg' || kind === 'damage' || kind === 'hit') {
@@ -1042,17 +1117,17 @@ function parseDamageEvent(event, frame = {}) {
       const amount = legacySourceFirst ? event[3] : event[2];
       const type = legacySourceFirst ? event[4] : event[3];
       const source = tagged
-        ? (sourceId == null ? null : sourceForDamage(sourceId, targetId))
-        : sourceForDamage(null, targetId);
-      recordDamage(source, amount, type, targetId);
+        ? (sourceId == null ? null : sourceForDamage(sourceId, targetId, context))
+        : sourceForDamage(null, targetId, context);
+      recordDamage(source, amount, type, targetId, context);
       return;
     }
     if (kind === 'status' || kind === 'buff' || kind === 'debuff' || kind === 'effect') {
-      handleStatusEvent(event[1], event[2], event[3] !== 0 && event[3] !== false, { duration: event[4], type: kind });
+      handleStatusEvent(event[1], event[2], event[3] !== 0 && event[3] !== false, { duration: event[4], type: kind }, context);
       return;
     }
     if (kind === 'skill') {
-      handleStatusEvent(event[1], 'skill', event[2] !== 0 && event[2] !== false, { positive: true, name: '技能' });
+      handleStatusEvent(event[1], 'skill', event[2] !== 0 && event[2] !== false, { positive: true, name: '技能' }, context);
     }
     return;
   }
@@ -1060,18 +1135,18 @@ function parseDamageEvent(event, frame = {}) {
   const kind = String(event.t ?? event.type ?? event.kind ?? '').toLowerCase();
   if (kind === 'spawn') {
     const unit = event.unit ?? event.data ?? event.payload;
-    if (unit && typeof unit === 'object') ensureDamageUnit(unit);
+    if (unit && typeof unit === 'object') ensureDamageUnit(unit, {}, context);
     return;
   }
-  if (kind === 'atk' || kind === 'attack') { registerAttack(event.sourceId ?? event.source ?? event.src ?? event.attacker, event.targetId ?? event.target ?? event.tgt); return; }
+  if (kind === 'atk' || kind === 'attack') { registerAttack(event.sourceId ?? event.source ?? event.src ?? event.attacker, event.targetId ?? event.target ?? event.tgt, context); return; }
   if (kind === 'dmg' || kind === 'damage' || kind === 'hit') {
     const targetId = event.targetId ?? event.target ?? event.tgt ?? event.to;
     const sourceId = event.sourceId ?? event.source ?? event.src ?? event.attacker ?? event.from;
-    recordDamage(sourceForDamage(sourceId, targetId), event.amount ?? event.damage ?? event.value ?? event.n, event.damageType ?? event.typeName ?? event.element ?? event.type, targetId);
+    recordDamage(sourceForDamage(sourceId, targetId, context), event.amount ?? event.damage ?? event.value ?? event.n, event.damageType ?? event.typeName ?? event.element ?? event.type, targetId, context);
     return;
   }
   if (kind === 'status' || kind === 'buff' || kind === 'debuff' || kind === 'effect') {
-    handleStatusEvent(event.unitId ?? event.targetId ?? event.target ?? event.id, event.key ?? event.status ?? event.effectId ?? event.name, event.active ?? event.on ?? event.enabled, event);
+    handleStatusEvent(event.unitId ?? event.targetId ?? event.target ?? event.id, event.key ?? event.status ?? event.effectId ?? event.name, event.active ?? event.on ?? event.enabled, event, context);
   }
 }
 
@@ -1124,18 +1199,19 @@ function parseTeamEffects(rawEffects) {
 
 function parseDamageFrame(msg) {
   if (!msg || typeof msg !== 'object') return;
+  const context = damageFrameContext(msg);
   if (msg.t === 'm.field' || msg.t === 'b.start') startDamageBattle(msg.battleId);
   if (msg.phase) setDamageLifecycle({ active: DAMAGE_BATTLE_PHASES.has(msg.phase), paused: !!msg.paused, phase: msg.phase });
   if (msg.round != null) resetDamageRound(msg.round);
   if (msg.battleId != null) state.damage.battleId = String(msg.battleId);
-  if (Array.isArray(msg.units)) updateDamageUnits(msg.units, msg.t || 'frame', {}, msg.battleId);
+  if (Array.isArray(msg.units)) updateDamageUnits(msg.units, msg.t || 'frame', {}, msg.battleId, false, context);
   if (!state.damage.collecting || state.damage.paused) return;
   if (Array.isArray(msg.effects)) parseTeamEffects(msg.effects);
   if (msg.spec) {
     const players = Array.isArray(msg.spec.players) ? msg.spec.players : [];
     for (const player of players) {
       ensureDamagePlayer(player);
-      updateDamageUnits(player?.units || player?.board || [], 'battle-spec', player);
+      updateDamageUnits(player?.units || player?.board || [], 'battle-spec', player, null, false, context);
     }
   }
   parseBattleEvents(msg);
@@ -1143,14 +1219,15 @@ function parseDamageFrame(msg) {
 
 function parseResultDamage(msg, allowFinal = false) {
   if (state.damage.paused || (!state.damage.collecting && !allowFinal)) return;
+  const context = damageFrameContext(msg);
   const result = msg?.result && typeof msg.result === 'object' ? msg.result : msg;
   for (const player of Array.isArray(result?.players) ? result.players : []) {
     // stats.dmgDealt is the match's cumulative damage — a 全局累计 floor, never a per-round delta
     const rec = mergeReportedPlayerDamage(player, { total: player?.stats?.dmgDealt }, 'result', { allowStopped: allowFinal });
     if (rec && allowFinal && finiteNumber(player?.stats?.dmgDealt) != null) rec.settled = true;
-    updateDamageUnits(player?.unitStats || [], 'result', player, msg?.battleId, allowFinal);
+    updateDamageUnits(player?.unitStats || [], 'result', player, msg?.battleId, allowFinal, context);
     const units = player?.units || player?.lineup || [];
-    updateDamageUnits(units, 'result-units', player, msg?.battleId, allowFinal);
+    updateDamageUnits(units, 'result-units', player, msg?.battleId, allowFinal, context);
     if (player?.stats?.dmgDealt != null) {
       // Keep team-level result visible as unattributed when no per-operator stats exist.
       if (!Array.isArray(player.unitStats) || !player.unitStats.length) {
@@ -1159,7 +1236,7 @@ function parseResultDamage(msg, allowFinal = false) {
       }
     }
   }
-  updateDamageUnits(result?.unitStats || [], 'result', {}, msg?.battleId, allowFinal);
+  updateDamageUnits(result?.unitStats || [], 'result', {}, msg?.battleId, allowFinal, context);
   scheduleRender('damage');
 }
 

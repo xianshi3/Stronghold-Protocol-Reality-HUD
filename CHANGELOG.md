@@ -2,6 +2,18 @@
 
 All notable changes to this project. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.7.2] - 2026-10-16
+
+### Fixed
+
+- **共享战场里「谁打都算我的」**：战斗事件用**每场战斗重新计数的运行时单位 id** 指认单位，而伤害记录按**干员 uid** 建行——两个 id 空间都是小整数，运行时 id 与某个 uid 撞号时，命中会记到那条 uid 记录（恰是别人、或自己的别位干员）头上；两处战场复用同一个运行时 id 时（观战队友、或同一块场地的下一场），还会按注册顺序串到先注册的那条。**队友帮忙防（联防）**里这最显眼：帮防队友的单位带着全新小 id 部署，撞上被帮防者（或任意玩家）低 uid 的干员行——「谁打都算我的」。1.7.1 的服务端来源标注挡不住这两条路径（来源 id 本身也要在正确的 id 空间里解析）。现在每个战场上下文（field / battle）维护一份 **运行时 id → 干员记录** 索引：命中在自己的战场里解析，绝不跨场；uid 只用于把同一干员的各场数据（本场、联防、结算快照）合并成一行。**来自 [Kriss-wq](https://github.com/Kriss-wq) 的 [PR #4](https://github.com/xianshi3/Stronghold-Protocol-Reality-HUD/pull/4)**（按其方案在 v1.7.1 代码上重做，保留 uid 合并与三表页面）。
+- **无来源帧的保守归属（vanilla 服务器）**：没有来源 id 的旧帧仍按攻击顺序推算，但同一目标上出现**多名不同攻击者**在飞时不再按队列顺序硬猜（记入 未归属），只有队列里只剩一个攻击者时才照常归属；同一干员的多段攻击不受影响。
+
+### Changed
+
+- 测试：`npm run test:damage` 新增 6 项（运行时 id 撞 uid、跨战场同号 id、联防帮防各归各、双攻击者不猜、单一攻击者照常）——41 → 47 项。
+- 服务端补丁无变化：本次为纯 HUD 修复，`server-patch/reality-hud-damage.patch` 与 1.7.1 相同，**无需重新部署**；未打补丁的服务器同样受益。
+
 ## [1.7.1] - 2026-10-16
 
 ### Fixed

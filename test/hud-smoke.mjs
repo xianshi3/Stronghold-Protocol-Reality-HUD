@@ -52,7 +52,7 @@ const api = await page.evaluate(() => ({
   author: globalThis.__REALITY_HUD__?.author,
 }));
 check("面板已挂载", api.mounted);
-check("版本 1.7.1", api.ver === "1.7.1", String(api.ver));
+check("版本 1.7.2", api.ver === "1.7.2", String(api.ver));
 check("作者署名 Reality", api.author === "Reality", String(api.author));
 
 // --- home is the landing page: overview card + the full card grid -------------------------------

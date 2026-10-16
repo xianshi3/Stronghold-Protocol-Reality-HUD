@@ -3,7 +3,7 @@
 > 分页式可拖拽悬浮窗 mod，叠加在 [《卫戍协议：盟约》](https://github.com/sganggs/Stronghold-Protocol)（Stronghold Protocol，**原项目 / Upstream**）游戏页面之上：首页一屏总览连接状态、真实延迟曲线与在线人数，卡片点按进入**本局**、**免密钥邀请好友**、**伤害统计**（干员 / 玩家 / 敌方三表，可各自弹成独立窗口）、服务、性能、日志与设置各页。
 
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-4ed8af.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.7.1-4ed8af.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.7.2-4ed8af.svg)](CHANGELOG.md)
 [![Game version](https://img.shields.io/badge/game-0.1.3%E2%80%930.2.6-8a948f.svg)](#兼容性)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-4ed8af.svg)](#贡献者--contributors)
 
@@ -28,7 +28,7 @@
 | 首页总览 | 真实延迟 RTT 大数字与 60 次采样迷你折线图（<80ms 绿 / <180ms 黄 / 其余红）、连接状态一行摘要（抖动 / 丢包 / 重连 / 时钟偏移 / 最近错误）、在线 / 房间 / 对局三个计数器；卡片上直接显示各页实时摘要 |
 | 本局 | 房间码、模式、难度、席位、你的座位、阶段中文名、回合 x/14、倒计时 |
 | **邀请** | **免密钥链接**：在同盟中给出 `?room=CODE` 链接，一键复制，好友打开即自动加入；**在线名单**：列出服务器上所有在线玩家（大厅 / 同盟中 / 对局中），每人一个「邀请」按钮，服务端把你的房间码定向推给对方；**收到邀请**：面板顶部弹横幅（任何页面都可见，邀请卡还会闪烁提示），点「立即加入」直接进房（已在其他同盟中则一键换房：服务端先退原房间；对局中会拒绝并说明）。旧服务端没有名单接口时自动降级（只隐藏名单，复制链接照常） |
-| **伤害** | **干员 / 玩家 / 敌方三张统计表**（页内标签切换）：本回合与全局累计伤害、伤害类型、来源归属与本地化，以及增益 / 减益类型与持续时间；页头「独立窗口」把当前这张表弹成悬浮窗（拖动 / 缩放 / 折叠照旧），窗口 `×` 或停靠位的「收回」放回页面；兼容 `m.unitStats`、`b.ev`、`m.field`、`m.result` 等新旧协议帧。**队友伤害**需服务端补丁才是实时的（普通回合结算后、Boss 轮约每秒），未打补丁时队友数据在本局结算时可见；结算帧带 `settled` 时本回合与全局两列**校正为服务器值**（本地实时读数是原始命中值的估算，击杀溢出 / 元素条会略高），每回合结束后所有屏幕数字一致；打了补丁的服务器在命中事件里带权威来源单位 id，**我打的伤害不会再显示成队友的名字**（未打补丁时按攻击顺序推算）（v1.7.1） |
+| **伤害** | **干员 / 玩家 / 敌方三张统计表**（页内标签切换）：本回合与全局累计伤害、伤害类型、来源归属与本地化，以及增益 / 减益类型与持续时间；页头「独立窗口」把当前这张表弹成悬浮窗（拖动 / 缩放 / 折叠照旧），窗口 `×` 或停靠位的「收回」放回页面；兼容 `m.unitStats`、`b.ev`、`m.field`、`m.result` 等新旧协议帧。**队友伤害**需服务端补丁才是实时的（普通回合结算后、Boss 轮约每秒），未打补丁时队友数据在本局结算时可见；结算帧带 `settled` 时本回合与全局两列**校正为服务器值**（本地实时读数是原始命中值的估算，击杀溢出 / 元素条会略高），每回合结束后所有屏幕数字一致。**归属按战场解析**（v1.7.2）：命中与单位在自己的战场（各自场地 / 联防 / 观战）里配对，运行时单位 id 不再与干员 uid 混用——**队友帮忙防（联防）时，帮防队友的伤害记在各自干员与玩家名下，不会再「谁打都算我的」**；打了补丁的服务器在命中事件里带权威来源单位 id，我打的伤害不会再显示成队友的名字（未打补丁时按攻击顺序推算、队列里出现多名不同攻击者时不猜），v1.7.1 / v1.7.2 |
 | 服务 | 从公开的 `/healthz` 取：在线人数、房间数、进行中对局、AI 队友、观战、连接数、服务版本、运行时长 |
 | 性能 | FPS 与帧时间。战斗在每个玩家的浏览器里本地模拟，这个数字才是低端设备卡不卡的关键 |
 | 日志 | 关键帧按严重度分色：握手、房间、阶段切换、结算、房间关闭、服务端错误（含 `detail` 明细），可筛选 / 展开 / 复制 |
@@ -58,7 +58,7 @@ GPL-3.0-or-later; the author is [@xianshi3](https://github.com/xianshi3). The in
 |---|---|
 | [上游原项目 Stronghold Protocol](https://github.com/sganggs/Stronghold-Protocol) `0.1.3` – `0.2.6` | ✅ 全部基础功能（HUD 只使用游戏公开的 `__SP__` 接口与公开 GET 端点） |
 | 在线名单 + 一键邀请 | 需要服务端打上可选补丁（[`server-patch/`](docs/server-patch.md)）；**未打补丁时 HUD 自动降级**——名单栏显示提示后停止请求，复制邀请链接照常可用 |
-| 队友伤害实时同步 | 同样需要服务端补丁（`reality-hud-damage.patch`）：普通回合结算后、Boss 轮约每秒把每名玩家的本回合 / 全局伤害放进 `m.public`，并给命中事件带上**权威来源 id**（我打的伤害归我名下，不再按攻击顺序猜测）；**未打补丁时**队友数据仅在本局结算时（`m.result`）可见、归属按序推算，本地自己的伤害始终实时 |
+| 队友伤害实时同步 | 同样需要服务端补丁（`reality-hud-damage.patch`）：普通回合结算后、Boss 轮约每秒把每名玩家的本回合 / 全局伤害放进 `m.public`，并给命中事件带上**权威来源 id**（我打的伤害归我名下，不再按攻击顺序猜测）；**未打补丁时**队友数据仅在本局结算时（`m.result`）可见、归属按序推算（v1.7.2 起队列里出现多名不同攻击者时不猜、记入未归属），本地自己的伤害始终实时 |
 | 未装 HUD 的原版玩家 | ✅ 完全不受影响：`room.invited` 推送对原版客户端是未知消息，会被静默忽略 |
 | 安卓端（WebView 壳） | ✅ HUD 随页面加载，触屏可拖动；隐藏后点右下角 **R 浮标**唤回（v1.4.0，手机无键盘也不怕） |
 | 系统 / 浏览器 | 桌面 Chrome / Edge / Firefox 优先；移动端可用（有触屏适配） |
@@ -138,7 +138,7 @@ npm run test:damage         # 伤害页自测（不需要游戏服务器）
 
 | <img src="https://github.com/xianshi3.png?size=96" width="56" alt="xianshi3"> | <img src="https://github.com/Kriss-wq.png?size=96" width="56" alt="Kriss-wq"> |
 |:---:|:---:|
-| **Reality** · [@xianshi3](https://github.com/xianshi3)<br>作者 / 维护者 | **Kriss-wq** · [@Kriss-wq](https://github.com/Kriss-wq)<br>[实时伤害统计窗口（PR #3）](https://github.com/xianshi3/Stronghold-Protocol-Reality-HUD/pull/3) |
+| **Reality** · [@xianshi3](https://github.com/xianshi3)<br>作者 / 维护者 | **Kriss-wq** · [@Kriss-wq](https://github.com/Kriss-wq)<br>[实时伤害统计窗口（PR #3）](https://github.com/xianshi3/Stronghold-Protocol-Reality-HUD/pull/3) · [伤害归属修复（PR #4）](https://github.com/xianshi3/Stronghold-Protocol-Reality-HUD/pull/4) |
 
 欢迎提 Issue 与 PR——贡献前请先读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
