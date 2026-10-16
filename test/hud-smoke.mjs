@@ -25,6 +25,9 @@ page.on("console", (m) => {
   // /api/players 404s on a server that predates the route (the HUD degrades by design and polls
   // only once) — that is a network log line, not a page error
   if ((m.location()?.url || "").includes("/api/players")) return;
+  // the game page pulls Google Fonts; on a network that cannot reach fonts.googleapis.com the
+  // load dies with net::ERR_CONNECTION_CLOSED — environmental, not a page error
+  if (/fonts\.(googleapis|gstatic)\.com/.test(m.location()?.url || "")) return;
   errors.push(`console: ${m.text()}`);
 });
 
@@ -69,7 +72,7 @@ check("页脚两个图标链接（仓库 + 博客）", chrome.footLinks.length =
   JSON.stringify(chrome.footLinks));
 
 // --- header is down to three buttons ---------------------------------------------------------
-const btns = await page.evaluate(() => [...document.querySelectorAll(".rh-head-actions .rh-ibtn")].map((b) => b.id));
+const btns = await page.evaluate(() => [...document.querySelectorAll("#reality-hud .rh-head-actions .rh-ibtn")].map((b) => b.id));
 check("标题栏只剩 3 个按钮", btns.length === 3, btns.join(","));
 check("按钮为 折叠/菜单/关闭", btns.join(",") === "rh-fold,rh-menu-btn,rh-close", btns.join(","));
 

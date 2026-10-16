@@ -18,7 +18,7 @@ const server = http.createServer(async (req, res) => {
   if (req.url === "/") { res.writeHead(200, { "content-type": "text/html" }); res.end(html); return; }
   if (req.url === "/healthz") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, online: 1, rooms: 1, matches: 1 })); return; }
   if (req.url === "/api/players") { res.writeHead(404); res.end(); return; }
-  const file = req.url === "/shared/constants.js" ? "fixture-constants.js" : req.url.slice(1);
+  const file = req.url === "/shared/constants.js" ? "test/fixture-constants.js" : req.url.slice(1);
   try { const body = await readFile(join(root, file)); res.writeHead(200, { "content-type": file.endsWith(".css") ? "text/css" : "text/javascript" }); res.end(body); }
   catch { res.writeHead(404); res.end(); }
 });
@@ -50,7 +50,11 @@ const first = await page.evaluate(() => ({
 if (!first.rows.some((r) => /测试干员/.test(r) && /125/.test(r) && /物理/.test(r))) throw new Error(`damage row missing: ${JSON.stringify(first)}`);
 if (first.rows.some((r) => /敌人/.test(r))) throw new Error(`enemy was rendered as operator: ${JSON.stringify(first.rows)}`);
 if (!/护盾/.test(first.text) || !/增益/.test(first.text)) throw new Error(`effect missing: ${first.text}`);
-if (!first.text.includes("玩家一") || !first.text.includes("125")) throw new Error(`player damage missing: ${first.text}`);
+if (!first.text.includes("125")) throw new Error(`damage summary missing: ${first.text}`);
+const playerText = await page.evaluate(() => document.querySelector("#rh-players-damage-window")?.textContent || "");
+if (!playerText.includes("玩家一") || !playerText.includes("125")) throw new Error(`player damage missing: ${playerText}`);
+const enemyText = await page.evaluate(() => document.querySelector("#rh-enemies-damage-window")?.textContent || "");
+if (!enemyText.includes("敌人") || !enemyText.includes("999")) throw new Error(`enemy damage missing: ${enemyText}`);
 await emit({ t: "m.public", round: 2, phase: "ROUND_START", lastRound: 14 });
 await new Promise((r) => setTimeout(r, 80));
 const second = await page.evaluate(() => [...document.querySelectorAll("#rh-damage-table .rh-damage-row")].map((r) => r.textContent));
@@ -58,7 +62,6 @@ if (!second.some((r) => /测试干员/.test(r) && /0/.test(r) && /125/.test(r)))
 await page.click("#rh-menu-btn");
 await page.click("#rh-menu-damage");
 if (await page.$("#rh-damage-window")) throw new Error("damage window did not close");
-await page.click("#rh-menu-btn");
 await page.click("#rh-menu-damage");
 if (!(await page.$("#rh-damage-window"))) throw new Error("damage window did not reopen");
 console.log("damage smoke: pass");

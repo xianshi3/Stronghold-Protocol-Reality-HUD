@@ -34,6 +34,9 @@ page.on("console", (m) => {
   // /api/players 404s on a server that predates the route (the HUD degrades by design) — not a
   // page error
   if ((m.location()?.url || "").includes("/api/players")) return;
+  // the game page pulls Google Fonts; on a network that cannot reach fonts.googleapis.com the
+  // load dies with net::ERR_CONNECTION_CLOSED — environmental, not a page error
+  if (/fonts\.(googleapis|gstatic)\.com/.test(m.location()?.url || "")) return;
   errors.push(`console: ${m.text()}`);
 });
 
