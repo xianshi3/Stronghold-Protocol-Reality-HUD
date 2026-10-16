@@ -1734,10 +1734,6 @@ function buildUi() {
         for (const panel of [damageRoot, playerDamageRoot, enemyDamageRoot]) if (panel) panel.style.setProperty('--rh-damage-scale', String(v));
         saveConfig();
       }),
-      h('button', {
-        class: 'rh-reset rh-reset--row', id: 'rh-grip-alt', text: '拖动这里也能改宽度',
-        onclick: () => toggleSection('settings'),
-      }),
       h('div', { class: 'rh-set-row rh-set-presets' },
         h('span', { class: 'rh-set-label', text: '布局预设' }),
         h('div', { class: 'rh-presets' },

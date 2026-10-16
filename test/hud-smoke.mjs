@@ -184,8 +184,8 @@ await settle();
 const closed = await page.evaluate(() => !document.querySelector("#rh-menu").classList.contains("is-open"));
 check("点击外部关闭菜单", closed);
 
-// --- the removed header buttons no longer exist ------------------------------------------------
-const gone = await page.evaluate(() => ["rh-pin", "rh-pause", "rh-settings", "rh-mini-toggle"]
+// --- the removed buttons no longer exist (header four + the settings drag-width row) ------------------------------------------------
+const gone = await page.evaluate(() => ["rh-pin", "rh-pause", "rh-settings", "rh-mini-toggle", "rh-grip-alt"]
   .filter((id) => document.getElementById(id)));
 check("旧按钮已移除", gone.length === 0, gone.join(","));
 

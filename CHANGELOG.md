@@ -9,6 +9,10 @@ All notable changes to this project. Format based on [Keep a Changelog](https://
 - **许可变更**：MIT → **GPL-3.0-or-later**（与所附加的游戏一致）；`LICENSE`、README、`package.json` / `mod.json` 与界面上的许可文案同步更新。
 - **README 重写**：移除博客链接行，新增贡献者展示（[@Kriss-wq](https://github.com/Kriss-wq) 的实时伤害统计窗口，PR #3）；`package.json` / `mod.json` 的 `homepage` 指向仓库地址。
 
+### Removed
+
+- **设置栏无用的「拖动这里也能改宽度」按钮**：它拖不动、也不改宽度，点按只会把设置栏折叠起来，已删除；调宽度用「面板宽度」滑条或面板右下角手柄即可（烟测 50 项断言同步覆盖其不再存在）。
+
 ## [1.5.1] - 2026-10-15
 
 ### Fixed
