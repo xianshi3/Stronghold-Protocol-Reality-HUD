@@ -50,6 +50,21 @@ index 47b1412f..9c9d66fb 100644
  - `m.toast {kind, text}` · `m.ticker {text, id, type, priority, playerId}` (the strip plays the highest priority first, §21.10) · `m.emote {playerId, id}` · `m.result {...}`
  - `m.layer {playerId, bondId, add}` — a positive prep layer gain, sent only to that player in ROUND_START / SP_DRAFT /
    PREP for audio feedback. No replay on reconnect/resync and no settlement backfill; battle audio uses `layer` tuples
+diff --git a/server/lobby.js b/server/lobby.js
+index de1640a4..7413fa54 100644
+--- a/server/lobby.js
++++ b/server/lobby.js
+@@ -352,7 +352,9 @@ export class Lobby {
+       case 'room.removeSpectator': return this.removeSpectator(session, msg);
+       case 'room.invite': return this.invite(session, msg);
+       default:
+-        if (typeof msg.t === 'string' && msg.t.startsWith('g.')) return this.routeGame(session, msg);
++        // Reality HUD damage patch (1.8.0): the HUD's live-damage relay goes to the running match like a g.* intent
++        // (net.js routes only the b.* battle reports there directly)
++        if (typeof msg.t === 'string' && (msg.t.startsWith('g.') || msg.t === 'm.hudDmg')) return this.routeGame(session, msg);
+         return fail(ERR.BAD_MSG, `unhandled type ${String(msg.t).slice(0, 32)}`);
+     }
+   }
 diff --git a/server/match/PlayerState.js b/server/match/PlayerState.js
 index 1445a497..2fd1cb3f 100644
 --- a/server/match/PlayerState.js
@@ -270,6 +285,92 @@ index a4b27420..65f04bb6 100644
    if (source) source.stats.elem = (source.stats.elem ?? 0) + amt;
    if (battle._hooks.damaged) battle.emit('damaged', { source, target, amount: amt, type: 'element', dmg });
    if (target.elem[el] >= max && target.alive) elementBurst(battle, source, target, el);
+diff --git a/shared/protocol.js b/shared/protocol.js
+index 128aee61..903fb467 100644
+--- a/shared/protocol.js
++++ b/shared/protocol.js
+@@ -469,6 +469,11 @@ export const C2S = {
+     $optional: ['resolved', 'leaks', 'bossDmg', 'by', 'done', 'left', 'leaksBy'],
+   },
+   'b.result': { battleId: isId, result: isBattleResult },
++
++  // the HUD's live-damage relay (Reality HUD damage patch 1.8.0): the player's own damage of the current round while
++  // a client-run field is in combat — the server cannot see a client-simulated field's damage otherwise. Rate-limited
++  // per player server-side (MatchReports._onHudDmg); a vanilla client never sends it.
++  'm.hudDmg': { dmg: (v) => isNum(v, 0, 1e8) },
+ };
+ 
+ // Server → client message types (documentation + client dispatch table keys).
+diff --git a/test/lobby-hud-relay.test.js b/test/lobby-hud-relay.test.js
+new file mode 100644
+index 00000000..5ee1a61f
+--- /dev/null
++++ b/test/lobby-hud-relay.test.js
+@@ -0,0 +1,64 @@
++// test/lobby-hud-relay.test.js — the HUD's live-damage relay `m.hudDmg` through the real server routing:
++// net.js → lobby.onMessage → the running match. Without the lobby route the server answered BAD_MSG
++// 'unhandled type m.hudDmg' (the 1.8.0 day-one bug). The message must reach routeGame instead — before a
++// match starts that reads WRONG_PHASE 'no running match', never the lobby's 'unhandled type'.
++// Run: node --test test/lobby-hud-relay.test.js
++import { describe, test, before, after, afterEach } from 'node:test';
++import assert from 'node:assert/strict';
++
++import { startServer } from '../server/index.js';
++import { StubMatch } from '../server/match/StubMatch.js';
++import { TestClient } from './helpers/wsClient.js';
++
++function clientPool(getUrl) {
++  const open = new Set();
++  return {
++    async connect() { const c = await TestClient.connect(getUrl()); open.add(c); return c; },
++    async player(name, token) {
++      const c = await this.connect();
++      const w = await c.hello(name, token);
++      c.id = w.playerId;
++      c.token = w.token;
++      return c;
++    },
++    async closeAll() {
++      await Promise.all([...open].map((c) => c.terminate().catch(() => {})));
++      open.clear();
++    },
++  };
++}
++const quietLog = () => {
++  const errors = [];
++  return { errors, log: { info() {}, warn() {}, debug() {}, error: (...a) => errors.push(a.map(String).join(' ')) } };
++};
++const ok = async (c, msg) => { const r = await c.request(msg); assert.equal(r.t, 'ok', `${msg.t}: ${JSON.stringify(r)}`); return r; };
++
++describe('m.hudDmg routing (lobby)', () => {
++  let srv;
++  let pool;
++  const cap = quietLog();
++  before(async () => {
++    srv = await startServer({ port: 0, host: '127.0.0.1', log: cap.log, MatchClass: StubMatch, lobbyGraceMs: 60_000 });
++    pool = clientPool(() => `ws://127.0.0.1:${srv.port}/ws`);
++  });
++  after(async () => {
++    await pool.closeAll();
++    await srv.close();
++  });
++  afterEach(() => {
++    assert.equal(cap.errors.length, 0, `server logged errors: ${cap.errors.join(' | ')}`);
++    cap.errors.length = 0;
++  });
++
++  test('m.hudDmg routes to the match, not the lobby\'s unhandled-type bucket', async () => {
++    const c = await pool.player('relay');
++    await ok(c, { t: 'room.create', mode: 'coop', difficulty: 'NORMAL' });
++    await c.waitFor('room.state', (s) => s.hostId === c.id);
++    // fire-and-forget like the HUD: no rid
++    c.send({ t: 'm.hudDmg', dmg: 123 });
++    const reply = await c.waitFor('error');
++    assert.equal(reply.code, 'WRONG_PHASE', JSON.stringify(reply));
++    assert.equal(reply.detail, 'no running match', JSON.stringify(reply));
++    await c.close();
++  });
++});
 diff --git a/test/match/reality-hud-damage.test.js b/test/match/reality-hud-damage.test.js
 new file mode 100644
 index 00000000..1e115bcc

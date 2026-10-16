@@ -93,7 +93,7 @@ GPL-3.0-or-later; the author is [@xianshi3](https://github.com/xianshi3). The in
 | 补丁 | 给什么 | 规模 |
 |---|---|---|
 | `server-patch/reality-hud-invite.patch` | 「在线名单 + 一键邀请」：`GET /api/players`（在线名单，**不含房间码 / token**）、C2S `room.invite` / S2C `room.invited`（定向推送，带限流） | 4 个文件 |
-| `server-patch/reality-hud-damage.patch` | 队友伤害实时同步 + 命中归属：`m.public` 玩家行附带 `hudDmg: { round, dmg, total, settled }`（普通回合结算后、Boss 轮约每秒；`settled` 标记结算完成、各屏以它校正）；仿真伤害事件带权威来源单位 id（我打的伤害不再显示成队友的名字；原版客户端忽略多余字段 / 元组尾巴）；`hudRelay` 广告 + `m.hudDmg` 实时上报（正常回合 / 联防里队友伤害约每 2 秒实时可见） | 9 个代码文件 + 3 篇文档 + 3 个测试 |
+| `server-patch/reality-hud-damage.patch` | 队友伤害实时同步 + 命中归属：`m.public` 玩家行附带 `hudDmg: { round, dmg, total, settled }`（普通回合结算后、Boss 轮约每秒；`settled` 标记结算完成、各屏以它校正）；仿真伤害事件带权威来源单位 id（我打的伤害不再显示成队友的名字；原版客户端忽略多余字段 / 元组尾巴）；`hudRelay` 广告 + `m.hudDmg` 实时上报（正常回合 / 联防里队友伤害约每 2 秒实时可见） | 10 个代码文件 + 3 篇文档 + 4 个测试 |
 
 ```bash
 cd Stronghold-Protocol

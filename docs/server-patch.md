@@ -7,7 +7,7 @@ Reality HUD 的核心功能（延迟、服务状态、本局、性能、日志�
 | 补丁 | 给什么 | 规模 |
 |---|---|---|
 | `reality-hud-invite.patch` | 在线名单 + 一键邀请 | 4 个代码文件 + 1 个文档 |
-| `reality-hud-damage.patch` | 队友伤害实时同步（`m.public` 玩家行 `hudDmg` + 客户端战斗的 `m.hudDmg` 实时上报）+ 命中归属来源 id | 9 个代码文件 + 3 篇文档 + 3 个测试 |
+| `reality-hud-damage.patch` | 队友伤害实时同步（`m.public` 玩家行 `hudDmg` + 客户端战斗的 `m.hudDmg` 实时上报）+ 命中归属来源 id | 10 个代码文件 + 3 篇文档 + 4 个测试 |
 
 ## 应用
 
@@ -44,10 +44,12 @@ curl -s http://127.0.0.1:3000/api/players   # 应返回 {"ok":true,"players":[..
 | `server/match/match/intents.js` | C2S 路由增加 `case 'm.hudDmg'` |
 | `server/match/match/platform.js` | 消息白名单增加 `m.hudDmg`（HUD 专属扩展类型，原版客户端不会发送） |
 | `shared/protocol.js` | C2S 协议表注册 `m.hudDmg { dmg }`——客户端 `validateC2S` 白名单放行，否则 HUD 的上报会被客户端直接拒发 |
+| `server/lobby.js` | `onMessage` 路由放行 `m.hudDmg`（与 `g.*` 一样交给对局处理；net.js 只直连路由 `b.*`，否则每 2 秒回一个 `BAD_MSG unhandled type` 错误帧） |
 | `server/match/match/settle.js` | 普通回合结算（本场结果 + 联防分摊）后盖章本回合伤害 |
 | `server/match/match/bossRounds.js` | `_finishFinal` 把 Boss 伤害写进 `stats.dmgDealt` 的同刻盖章（该伤害自此只算一次） |
 | `server/sim/damage.js` | 带来源的命中事件追加权威来源单位 id（元组第 6 项；无来源命中保持 4 元素旧形状，游戏自身客户端只读前几项、不受影响）——HUD 从此不再按攻击顺序猜归属 |
 | `docs/design/network.md`、`docs/META.md`、`docs/SIM.md` | 协议文档同步 |
+| `test/lobby-hud-relay.test.js` | 1 例：WS 级路由回归——`m.hudDmg` 必须路由进对局层（未开局时 `WRONG_PHASE: no running match`），而不是大厅的 `unhandled type` 桶 |
 | `test/match/reality-hud-damage.test.js` | 7 例：视图数学（回合戳 / 实时份额 / 不重复 / `settled` 判定）、普通回合盖章与回合切换清零、Boss 轮实时值（未结算）与结算不重复计数、联防回合归属、`m.hudDmg` 上报（广告 / 限流 / 非法值 / 结算清除 / 服务器运行模式忽略）、协议校验放行 |
 | `test/sim/damage-attribution.test.js` | 3 例：来源标注形状（带 / 不带标记槽）、来源 id 正确性（含 `defIgnorePct` 命中） |
 | `test/sim/battle.test.js` | 战斗事件流 wire format 断言更新（带来源事件为 6 元素元组，末位为已 spawn 单位 id） |
@@ -65,6 +67,7 @@ curl -s http://127.0.0.1:3000/api/players   # 应返回 {"ok":true,"players":[..
 ## 验证
 
 - `node --test test/match/reality-hud-damage.test.js` —— 伤害补丁 7 例（视图数学 / 普通回合盖章 / Boss 轮实时与不重复计数 / 联防回合归属 / `m.hudDmg` 实时上报 / 协议校验放行）
+- `node --test test/lobby-hud-relay.test.js` —— WS 级路由回归 1 例（`m.hudDmg` 进对局层而不是大厅 unhandled 桶）
 - `node --test test/sim/damage-attribution.test.js` —— 仿真事件归属契约 3 例（带 / 不带标记槽的形状、来源 id 正确性）
 - `node --test test/lobby-invite.test.js` —— 邀请补丁 5 例
 - `node test/hud-smoke.mjs http://127.0.0.1:3000` —— HUD 侧 67 项断言（含伤害页、模拟 `room.invited` 横幅与旧服务器降级路径）
