@@ -1,9 +1,9 @@
 # Reality HUD
 
-> 可拖拽的悬浮窗 mod，叠加在 [《卫戍协议：盟约》](https://github.com/sganggs/Stronghold-Protocol)（Stronghold Protocol，**原项目 / Upstream**）游戏页面之上：连接状态、真实延迟曲线、在线人数、本局信息、**免密钥邀请好友**、**实时伤害统计**、性能与事件日志，一屏看全。
+> 分页式可拖拽悬浮窗 mod，叠加在 [《卫戍协议：盟约》](https://github.com/sganggs/Stronghold-Protocol)（Stronghold Protocol，**原项目 / Upstream**）游戏页面之上：首页一屏总览连接状态、真实延迟曲线与在线人数，卡片点按进入**本局**、**免密钥邀请好友**、**实时伤害统计**、服务、性能、日志与设置各页。
 
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-4ed8af.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.5.1-4ed8af.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.6.0-4ed8af.svg)](CHANGELOG.md)
 [![Game version](https://img.shields.io/badge/game-0.1.3%E2%80%930.2.6-8a948f.svg)](#兼容性)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-4ed8af.svg)](#贡献者--contributors)
 
@@ -21,27 +21,30 @@
 
 ## 功能
 
-| 分区 | 内容 |
+悬浮窗是分页式的小面板：**首页**是一屏总览 + 进入各页的卡片，点卡片切页，页内左上角「‹ 首页」返回。
+
+| 页面 | 内容 |
 |---|---|
-| 延迟 RTT | 游戏自带心跳测出的**真实往返延迟**，60 次采样迷你折线图（<80ms 绿 / <180ms 黄 / 其余红），抖动与丢包 |
-| 连接状态 | 在线 / 连接中 / 重连中 / 已断开，重连次数，最近一次错误，时钟偏移 |
-| 在线玩家 | 从公开的 `/healthz` 取：在线人数、房间数、进行中对局、AI 队友、观战、连接数、服务版本、运行时长 |
+| 首页总览 | 真实延迟 RTT 大数字与 60 次采样迷你折线图（<80ms 绿 / <180ms 黄 / 其余红）、连接状态一行摘要（抖动 / 丢包 / 重连 / 时钟偏移 / 最近错误）、在线 / 房间 / 对局三个计数器；卡片上直接显示各页实时摘要 |
 | 本局 | 房间码、模式、难度、席位、你的座位、阶段中文名、回合 x/14、倒计时 |
-| **邀请** | **免密钥链接**：在同盟中给出 `?room=CODE` 链接，一键复制，好友打开即自动加入；**在线名单**：列出服务器上所有在线玩家（大厅 / 同盟中 / 对局中），每人一个「邀请」按钮，服务端把你的房间码定向推给对方；**收到邀请**：面板顶部弹横幅，点「立即加入」直接进房（已在其他同盟中则一键换房：服务端先退原房间；对局中会拒绝并说明）。旧服务端没有名单接口时自动降级（只隐藏名单，复制链接照常） |
+| **邀请** | **免密钥链接**：在同盟中给出 `?room=CODE` 链接，一键复制，好友打开即自动加入；**在线名单**：列出服务器上所有在线玩家（大厅 / 同盟中 / 对局中），每人一个「邀请」按钮，服务端把你的房间码定向推给对方；**收到邀请**：面板顶部弹横幅（任何页面都可见，邀请卡还会闪烁提示），点「立即加入」直接进房（已在其他同盟中则一键换房：服务端先退原房间；对局中会拒绝并说明）。旧服务端没有名单接口时自动降级（只隐藏名单，复制链接照常） |
 | **实时伤害统计** | **三个独立窗口（干员 / 玩家 / 敌方）**：每回合与全局累计伤害、伤害类型、来源归属与本地化，以及增益 / 减益类型与持续时间；兼容 `m.unitStats`、`b.ev`、`m.field`、`m.result` 等新旧协议帧 |
+| 服务 | 从公开的 `/healthz` 取：在线人数、房间数、进行中对局、AI 队友、观战、连接数、服务版本、运行时长 |
 | 性能 | FPS 与帧时间。战斗在每个玩家的浏览器里本地模拟，这个数字才是低端设备卡不卡的关键 |
-| 事件日志 | 关键帧按严重度分色：握手、房间、阶段切换、结算、房间关闭、服务端错误（含 `detail` 明细），可筛选 / 展开 / 复制 |
+| 日志 | 关键帧按严重度分色：握手、房间、阶段切换、结算、房间关闭、服务端错误（含 `detail` 明细），可筛选 / 展开 / 复制 |
+| 设置 | 宽度、不透明度、淡出透明度、伤害窗口字号滑条；首页显示哪些页面的开关 |
 | 关于 | 作者信息、数据来源、免责声明 |
 
 ![邀请好友](docs/hud-invite.png)
 
 ## English
 
-**Reality HUD** is a draggable, collapsible floating panel (a *mod*) for the browser game
+**Reality HUD** is a draggable, collapsible, **page-based** floating panel (a *mod*) for the browser game
 [Stronghold Protocol](https://github.com/sganggs/Stronghold-Protocol) — a non-commercial fan remake of the
-Arknights「卫戍协议：盟约」co-op mode. It shows the connection state, real RTT with a sparkline, server
-population, the current match, invites (**password-free `?room=` links**, an online roster, one-tap
-invitations), real-time damage windows, FPS and an event log — without modifying a single line of game code.
+Arknights「卫戍协议：盟约」co-op mode. A home page shows the connection state, real RTT with a sparkline and
+server population at a glance; cards open pages for the current match, invites (**password-free `?room=`
+links**, an online roster, one-tap invitations), real-time damage windows, server, FPS, an event log and
+settings — without modifying a single line of game code.
 GPL-3.0-or-later; the author is [@xianshi3](https://github.com/xianshi3). The interface is Chinese-first.
 
 ## 兼容性
@@ -66,12 +69,13 @@ GPL-3.0-or-later; the author is [@xianshi3](https://github.com/xianshi3). The in
 
 ## 使用
 
-- **拖动**：按住标题栏移动；位置、宽度、折叠、透明度记在 `localStorage`，下次打开还在原地
+- **拖动**：按住标题栏移动；位置、宽度、折叠、透明度记在 `localStorage`，下次打开还在原地（连同你最后停留的页面）
+- **切页**：首页卡片点按进入对应页面，页内左上角「‹ 首页」返回
 - **折叠**：标题栏 `—`；**隐藏**：`×`，之后点右下角的 **R 浮标**唤回（手机可直接点），桌面也可用 <kbd>Shift</kbd>+<kbd>H</kbd>
-- **菜单 `…`**：常驻显示 / 迷你模式 / 暂停采样 / 设置
-- **设置**：布局预设（精简 / 标准 / 全部）、各分区显示开关、宽度与透明度滑条
+- **菜单 `…`**：常驻显示 / 迷你模式（只留延迟一行）/ 暂停采样 / 伤害统计窗口 / 打开设置
+- **设置**：宽度、不透明度、淡出透明度、伤害字号滑条；「首页显示这些页面」开关决定哪些卡片出现在首页
 - **邀请好友（v1.4.0）**：
-  1. 创建或加入一个同盟，打开「邀请」栏 → 复制 `?room=密钥` 邀请链接发给好友，**对方打开就自动进房，不用输密钥**；
+  1. 创建或加入一个同盟，打开「邀请」页 → 复制 `?room=密钥` 邀请链接发给好友，**对方打开就自动进房，不用输密钥**；
   2. 你的房间没有在对局中时，名单里每个人的「邀请」按钮会把邀请推给对方（`room.invite` → `room.invited`）；
   3. 对方 HUD 顶部弹出横幅 → 点「**立即加入**」直接进你的同盟（对方在别的同盟里时会先退出原同盟再进来；正在对局中则无法加入）。
 
@@ -102,15 +106,15 @@ mod 本体是两个静态文件（`hud.js` + `hud.css`），无构建、无依�
 
 | 测试 | 命令 | 覆盖 |
 |---|---|---|
-| 桌面冒烟 | `npm test` | 50 项断言：挂载、折叠、菜单、真实指针点按、邀请栏、模拟邀请横幅、三个伤害窗口、隐藏唤回浮标、无页面错误…… |
-| 手机模拟 | `npm run test:mobile` | 7 项断言：折叠条、浮标、触屏唤回（截图到系统临时目录） |
+| 桌面冒烟 | `npm test` | 60 项断言：挂载、首页卡片与切页、返回、页面开关、折叠、菜单、真实指针点按、邀请页与模拟邀请横幅、日志与错误明细、隐藏唤回浮标、无页面错误…… |
+| 手机模拟 | `npm run test:mobile` | 8 项断言：面板适配、浮标、触屏切页与拖动（截图到系统临时目录） |
 | 伤害窗口 | `npm run test:damage` | 自带假服务器：三个窗口的归属、分栏与本地化 |
 
 ```bash
 npm install                 # 只装 devDependency（puppeteer-core）
 node server/index.js        # 在游戏仓库起一个本地服务器（默认 http://127.0.0.1:3000）
-npm test                    # 桌面冒烟 50 断言
-npm run test:mobile         # 手机模拟 7 断言
+npm test                    # 桌面冒烟 60 断言
+npm run test:mobile         # 手机模拟 8 断言
 npm run test:damage         # 伤害窗口自测（不需要游戏服务器）
 # Windows 以外设置 CHROME_PATH 指向 Chrome 可执行文件
 ```

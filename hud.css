@@ -190,6 +190,10 @@
   overscroll-behavior: contain;
 }
 
+/* v1.6.0: the body is a padded canvas of rounded cards (overview / page content / card grid).
+   The damage windows' .rh-damage-body carries .rh-body too — scope the padding to the panel. */
+.rh-root .rh-body { padding: 8px; }
+
 /* Collapsed: shrink to the header strip only. The panel keeps its configured width in memory,
    so expanding restores exactly the previous layout. */
 .rh-root.is-collapsed .rh-body,
@@ -224,13 +228,21 @@
 }
 .rh-body::-webkit-scrollbar-thumb:hover { background: rgba(78, 216, 175, 0.4); }
 
-/* ---------------------------------------------------------------- hero: the latency readout */
+/* ---------------------------------------------------------------- home · overview
+   The home page leads with a single overview card: the RTT readout + sparkline, the status line,
+   and three quick counters. Everything else lives behind the card grid below it. */
+
+.rh-overview {
+  padding: 10px 10px 9px;
+  background: linear-gradient(180deg, rgba(78, 216, 175, 0.10), rgba(78, 216, 175, 0.015) 72%);
+  border: 1px solid var(--rh-line, rgba(78, 216, 175, 0.28));
+  border-radius: 10px;
+}
 
 .rh-hero {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 10px 6px;
+  gap: 12px;
 }
 
 .rh-hero-main { flex: 0 0 auto; }
@@ -240,6 +252,7 @@
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--text-dim, #5d6863);
+  margin-bottom: 2px;
 }
 
 .rh-hero-num {
@@ -249,7 +262,7 @@
 }
 
 .rh-hero-num .rh-metric-num {
-  font: 700 26px/1.05 var(--rh-mono, ui-monospace, Menlo, Consolas, monospace);
+  font: 700 30px/1.05 var(--rh-mono, ui-monospace, Menlo, Consolas, monospace);
   letter-spacing: -0.01em;
 }
 
@@ -258,7 +271,7 @@
 .rh-spark {
   flex: 1 1 auto;
   min-width: 0;
-  height: 30px;
+  height: 34px;
   overflow: visible;
 }
 
@@ -272,7 +285,7 @@
 .rh-spark-area { opacity: 0.14; stroke: none; }
 
 .rh-sub {
-  padding: 0 10px 8px;
+  margin-top: 7px;
   font-size: 10.5px;
   color: var(--text-lo, #8a948f);
   word-break: break-word;
@@ -282,27 +295,39 @@
 .rh-sub.is-warn { color: var(--rh-warn, #f6a329); }
 .rh-sub.is-bad  { color: var(--rh-bad, #e73118); }
 
+/* the three quick counters, as chips under the RTT line */
 .rh-stats {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.rh-overview .rh-metric {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
   gap: 1px;
-  padding: 0 0 1px;
-  background: rgba(255, 255, 255, 0.05);
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 7px;
 }
 
-.rh-stats .rh-metric {
-  flex: 1 1 0;
-  background: var(--rh-bg-solid, #0f1312);
-}
+.rh-overview .rh-metric-label { font-size: 9px; }
+.rh-overview .rh-metric-val { font-size: 14px; }
 
-/* mini mode: only the RTT line */
+/* mini mode: only the RTT line stays (the page area hides entirely) */
 .rh-root.rh-mini .rh-sub,
 .rh-root.rh-mini .rh-stats,
-.rh-root.rh-mini .rh-sec:not(#rh-sec-server),
+.rh-root.rh-mini .rh-cards-wrap,
 .rh-root.rh-mini .rh-foot-note { display: none; }
-.rh-root.rh-mini .rh-hero { padding-bottom: 8px; }
+.rh-root.rh-mini .rh-page:not(#rh-page-home) { display: none; }
+.rh-root.rh-mini .rh-overview { padding-bottom: 8px; }
 
 /* ---------------------------------------------------------------- sections */
 
+/* .rh-sec survives for the damage windows (v1.6.0 moved the main panel to pages) */
 .rh-sec { border-top: 1px solid rgba(255, 255, 255, 0.06); }
 .rh-sec[hidden] { display: none; }
 
@@ -331,12 +356,6 @@
   min-width: 0;
 }
 
-.rh-sec.is-folded > .rh-grid,
-.rh-sec.is-folded > .rh-invite,
-.rh-sec.is-folded > .rh-log,
-.rh-sec.is-folded > .rh-about,
-.rh-sec.is-folded > .rh-set { display: none; }
-
 .rh-mini {
   padding: 1px 6px;
   font: 400 9.5px/1.5 var(--rh-mono, ui-monospace, monospace);
@@ -353,14 +372,6 @@
   background: rgba(78, 216, 175, 0.12);
   border-color: var(--rh-line, rgba(78, 216, 175, 0.28));
 }
-
-.rh-mini.rh-eye {
-  flex: 0 0 auto;
-  min-width: 22px;
-  border-color: transparent;
-}
-.rh-mini.rh-eye.is-on { color: var(--text-lo, #8a948f); }
-.rh-mini.rh-eye:not(.is-on) { opacity: 0.45; }
 
 /* ---------------------------------------------------------------- metrics */
 
@@ -404,6 +415,176 @@
 .rh-metric-val.is-ok,   .rh-metric-num.is-ok   { color: var(--rh-ok, #4ed8af); }
 .rh-metric-val.is-warn, .rh-metric-num.is-warn { color: var(--rh-warn, #f6a329); }
 .rh-metric-val.is-bad,  .rh-metric-num.is-bad  { color: var(--rh-bad, #e73118); }
+
+/* ---------------------------------------------------------------- pages (v1.6.0)
+   The panel is a tiny app now: the home page is the overview + the card grid, every other page
+   is one card of content behind a back button. Exactly one page is on display at a time. */
+
+.rh-page { display: none; min-width: 0; }
+.rh-page.is-active { display: block; animation: rh-page-in 0.16s ease; }
+
+@keyframes rh-page-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.rh-page-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 1px 1px 8px;
+}
+
+.rh-page-title {
+  margin-right: auto;
+  font: 600 12.5px/1.2 var(--rh-font, system-ui, sans-serif);
+  letter-spacing: 0.05em;
+  color: var(--text-hi, #f2f2f2);
+  white-space: nowrap;
+}
+
+.rh-back {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px 3px 7px;
+  font: 500 10.5px/1.4 var(--rh-mono, ui-monospace, monospace);
+  color: var(--text-lo, #8a948f);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+
+.rh-back:hover {
+  color: var(--text-hi, #f2f2f2);
+  background: rgba(78, 216, 175, 0.12);
+  border-color: var(--rh-line, rgba(78, 216, 175, 0.28));
+}
+
+/* every page's content reads as one rounded card */
+.rh-page .rh-grid,
+.rh-page .rh-invite,
+.rh-page .rh-log,
+.rh-page .rh-about,
+.rh-page .rh-set {
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------- home card grid */
+
+.rh-cards-wrap { margin-top: 10px; }
+
+.rh-cards-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 2px 7px;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-dim, #5d6863);
+}
+
+.rh-cards-label::after {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.rh-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.rh-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 9px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, transform 0.12s;
+}
+
+.rh-card:hover {
+  background: rgba(78, 216, 175, 0.10);
+  border-color: var(--rh-line, rgba(78, 216, 175, 0.28));
+}
+
+.rh-card:active { transform: scale(0.985); }
+.rh-card[hidden] { display: none; }
+
+.rh-card-icon {
+  flex: 0 0 auto;
+  width: 27px;
+  height: 27px;
+  display: grid;
+  place-items: center;
+  color: var(--rh-ok, #4ed8af);
+  background: rgba(78, 216, 175, 0.10);
+  border: 1px solid rgba(78, 216, 175, 0.22);
+  border-radius: 8px;
+}
+
+.rh-card-icon svg { width: 15px; height: 15px; display: block; }
+
+.rh-card-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rh-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-hi, #f2f2f2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rh-card-sub {
+  font-size: 9.5px;
+  color: var(--text-dim, #5d6863);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rh-card-arrow {
+  flex: 0 0 auto;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-dim, #5d6863);
+}
+
+.rh-card:hover .rh-card-arrow { color: var(--rh-ok, #4ed8af); }
+
+/* warnings waiting in the log */
+.rh-card.is-warn .rh-card-icon {
+  color: var(--rh-warn, #f6a329);
+  background: rgba(246, 163, 41, 0.12);
+  border-color: rgba(246, 163, 41, 0.45);
+}
+
+/* an invitation is waiting */
+.rh-card.is-glow .rh-card-icon {
+  border-color: var(--rh-ok, #4ed8af);
+  animation: rh-pulse 1.6s ease-in-out infinite;
+}
 
 /* ---------------------------------------------------------------- invite (v1.3.1) */
 
@@ -507,13 +688,13 @@
 .rh-player-state.is-ok   { color: var(--rh-ok, #4ed8af); }
 .rh-player-state.is-warn { color: var(--rh-warn, #f6a329); }
 
-/* the incoming-invitation banner: above the hero, so folded sections can't hide it */
+/* the incoming-invitation banner: above the pages, so no page can hide it */
 .rh-invite-toast {
-  margin: 6px 6px 0;
+  margin: 0 0 8px;
   padding: 8px 10px;
   background: rgba(78, 216, 175, 0.08);
   border: 1px solid var(--rh-line, rgba(78, 216, 175, 0.28));
-  border-radius: 6px;
+  border-radius: 8px;
 }
 .rh-invite-toast[hidden] { display: none; }
 
@@ -754,35 +935,19 @@
   cursor: pointer;
 }
 
-.rh-set-presets { grid-template-columns: auto 1fr; }
-
-.rh-presets { display: flex; gap: 4px; }
-
-.rh-preset {
-  flex: 1 1 0;
-  padding: 3px 6px;
-  font: 500 10px/1.5 var(--rh-mono, ui-monospace, monospace);
+.rh-set-caption {
+  margin: 2px 0 7px;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
   color: var(--text-dim, #5d6863);
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 5px;
-  cursor: pointer;
-  transition: all 0.12s;
-}
-
-.rh-preset:hover { color: var(--text-hi, #f2f2f2); }
-
-.rh-preset.is-on {
-  color: var(--rh-ok, #4ed8af);
-  background: rgba(78, 216, 175, 0.14);
-  border-color: var(--rh-ok, #4ed8af);
 }
 
 .rh-set-toggles {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin: 9px 0;
+  margin: 0 0 9px;
 }
 
 .rh-toggle {
@@ -824,14 +989,17 @@
 
 /* ---------------------------------------------------------------- log */
 
+/* the filter row on the log page — a toolbar card of its own */
 .rh-filters {
-  margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 3px;
-  flex: 0 0 auto;
+  gap: 4px;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 9px;
 }
 
 .rh-chip {
@@ -1136,20 +1304,22 @@
   .rh-body { max-height: 58vh; }
   .rh-ibtn { width: 26px; height: 26px; font-size: 14px; }
   .rh-mini { padding: 4px 10px; font-size: 11px; }
-  .rh-mini.rh-eye { min-width: 30px; }
   .rh-chip { padding: 4px 11px; font-size: 11px; }
   .rh-toggle { padding: 5px 12px; font-size: 11px; }
   .rh-btn { padding: 6px 12px; font-size: 11.5px; }
   .rh-player-row { padding: 7px 10px; }
-  .rh-invite-toast { margin: 6px 6px 0; }
+  .rh-invite-toast { margin: 0 0 8px; }
   .rh-head { padding: 10px 8px 10px 12px; }
   .rh-metric { padding: 8px 10px; }
+  .rh-overview .rh-metric { padding: 7px 9px; }
+  .rh-card { padding: 9px 10px; }
+  .rh-card-icon { width: 30px; height: 30px; }
+  .rh-back { padding: 5px 11px 5px 9px; }
   .rh-line-head { padding: 4px 10px; font-size: 11.5px; }
   .rh-line-body { margin-left: 12px; font-size: 11px; }
   .rh-grip { width: 26px; height: 26px; }
   .rh-set-row { grid-template-columns: 1fr auto; }
   .rh-range { grid-column: 1 / -1; }
-  .rh-set-presets { grid-template-columns: 1fr; }
   .rh-mini { padding: 4px 9px; }
 }
 
@@ -1160,6 +1330,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .rh-root,
+  .rh-page,
+  .rh-card,
   .rh-dot,
   .rh-ibtn,
   .rh-mini,

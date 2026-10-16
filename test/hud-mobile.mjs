@@ -89,11 +89,20 @@ await sleep(300);
 await page.tap("#rh-menu-settings");
 await sleep(500);
 const setFits = await page.evaluate(() => {
-  const sec = document.querySelector("#rh-sec-settings");
-  return !!sec && !sec.hidden && globalThis.__REALITY_HUD__.state.cfg.show.settings === true;
+  const p = document.querySelector("#rh-page-settings");
+  return !!p && p.classList.contains("is-active") && p.offsetParent !== null && globalThis.__REALITY_HUD__.state.cfg.show.settings === true;
 });
-check("手机上可打开设置", setFits);
+check("手机上可打开设置页", setFits);
 await shot("mob-settings.png");
+
+// 4b) touch navigation: back to the home grid, then a card opens its page
+await page.tap("#rh-page-settings .rh-back");
+await sleep(400);
+await page.tap("#rh-card-perf");
+await sleep(400);
+check("手机上点卡片切页", await page.evaluate(() => document.querySelector("#rh-page-perf").classList.contains("is-active")));
+await page.tap("#rh-page-perf .rh-back");
+await sleep(300);
 
 // 5) drag the panel by its header with touch — the last interaction a tap must follow
 const hb = await (await page.$(".rh-head")).boundingBox();

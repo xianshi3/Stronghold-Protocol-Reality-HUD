@@ -1,8 +1,8 @@
 {
   "id": "reality-hud",
   "name": "Reality HUD",
-  "version": "1.5.1",
-  "description": "可拖拽的悬浮窗：连接状态、延迟曲线、在线人数、本局状态、邀请好友、干员伤害与增益减益统计、性能、事件日志。",
+  "version": "1.6.0",
+  "description": "分页式可拖拽悬浮窗：首页总览（延迟曲线、连接状态、在线人数）+ 卡片进入本局、邀请好友、服务、性能、事件日志与设置页；干员伤害与增益减益实时统计。",
   "author": "Reality",
   "authorUrl": "https://github.com/xianshi3",
   "homepage": "https://github.com/xianshi3/Stronghold-Protocol-Reality-HUD",

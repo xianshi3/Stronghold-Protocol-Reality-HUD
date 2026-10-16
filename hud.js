@@ -51,7 +51,7 @@ const AUTHOR = Object.freeze({
   repoLabel: 'xianshi3/Stronghold-Protocol-Reality-HUD',
 });
 
-const MOD_VERSION = '1.5.1';
+const MOD_VERSION = '1.6.0';
 
 const DEFAULTS = {
   x: null,               // null = park it on the right edge (computed on first show)
@@ -65,15 +65,15 @@ const DEFAULTS = {
   idleOpacity: 0.3,
   mini: false,            // mini = only the RTT line, everything else folded away
   paused: false,          // paused = stop every timer and the rAF loop
-  preset: 'standard',     // compact | standard | full — drives `show` and the initial folds
-  show: {                 // per-section visibility, driven by the settings panel
+  page: 'home',           // the visible page: home | invite | match | server | perf | log | settings | about
+  show: {                 // per-page visibility (its card on the home grid), driven by the settings panel
     server: true,
     match: true,
     invite: true,
     perf: true,
     log: true,
-    settings: false,
-    about: false,
+    settings: true,
+    about: true,
   },
   damageWindow: {
     visible: true,
@@ -92,7 +92,7 @@ const DEFAULTS = {
       enemies: { x: null, y: null, width: 480, height: null, collapsed: false, visible: true, columnWidths: {} },
     },
   },
-  folded: {},             // sectionId -> bool, per-section fold state
+  folded: {},             // legacy (v1.5.x per-section folds) — kept so old configs load, no longer used
   logFilter: 'all',       // all | warn | state
   logExpanded: [],        // log ids whose detail is open
   logWrap: false,         // wrap long detail lines instead of clipping
@@ -101,12 +101,16 @@ const DEFAULTS = {
 const WIDTH_MIN = 260;
 const WIDTH_MAX = 720;
 
-/** Fold/visibility presets. `open` lists sections left unfolded; the rest collapse. */
-const PRESETS = {
-  compact: { width: 300, open: ['server'], show: { server: true, match: true, invite: true, perf: false, log: true, settings: false, about: false } },
-  standard: { width: 380, open: ['server', 'match', 'invite', 'perf'], show: { server: true, match: true, invite: true, perf: true, log: true, settings: false, about: false } },
-  full: { width: 460, open: ['server', 'match', 'invite', 'perf', 'log', 'settings', 'about'], show: { server: true, match: true, invite: true, perf: true, log: true, settings: true, about: true } },
-};
+/** The pages behind the home grid, in card order. `id` doubles as the DOM suffix (#rh-page-<id>). */
+const PAGES = [
+  { id: 'invite', label: '邀请', icon: 'invite' },
+  { id: 'match', label: '本局', icon: 'match' },
+  { id: 'server', label: '服务', icon: 'server' },
+  { id: 'perf', label: '性能', icon: 'perf' },
+  { id: 'log', label: '日志', icon: 'log' },
+  { id: 'settings', label: '设置', icon: 'settings' },
+  { id: 'about', label: '关于', icon: 'about' },
+];
 
 function loadConfig() {
   const base = { ...DEFAULTS, show: { ...DEFAULTS.show }, damageWindow: { ...DEFAULTS.damageWindow, windows: { ...DEFAULTS.damageWindow.windows } }, folded: {} };
@@ -127,16 +131,21 @@ function loadConfig() {
         columnWidths: savedDamage.columnWidths ?? windows.operators.columnWidths,
       };
     }
+    // v1.5.x → v1.6.0: 设置 / 关于 used to be bottom sections that were off by default; as pages
+    // they would start unreachable, so a pre-1.6 config gets them once (it has no `page` key).
+    const show = { ...base.show, ...(parsed.show || {}) };
+    if (parsed.page === undefined) { show.settings = true; show.about = true; }
     return {
       ...base,
       ...parsed,
-      show: { ...base.show, ...(parsed.show || {}) },
+      show,
       damageWindow: {
         ...base.damageWindow,
         ...savedDamage,
         windows,
       },
-      folded: { ...(parsed.folded || {}) },
+      folded: {},
+      page: typeof parsed.page === 'string' && (parsed.page === 'home' || show[parsed.page] === true) ? parsed.page : 'home',
       logExpanded: Array.isArray(parsed.logExpanded) ? parsed.logExpanded.slice(-40) : [],
     };
   } catch {
@@ -1084,11 +1093,12 @@ function scheduleRender(what) {
     for (const job of jobs) {
       if (job === 'status') renderStatus();
       else if (job === 'spark') renderSparkline();
-      else if (job === 'server') { renderServer(); renderStats(); }
-      else if (job === 'match') renderMatch();
-      else if (job === 'invite') renderInvite();
-      else if (job === 'perf') renderPerf();
-      else if (job === 'log') renderLog();
+      else if (job === 'server') { renderServer(); renderStats(); renderHome(); }
+      else if (job === 'match') { renderMatch(); renderHome(); }
+      else if (job === 'invite') { renderInvite(); renderHome(); }
+      else if (job === 'perf') { renderPerf(); renderHome(); }
+      else if (job === 'log') { renderLog(); renderHome(); }
+      else if (job === 'home') renderHome();
       else if (job === 'damage') renderDamage();
     }
   });
@@ -1621,26 +1631,7 @@ function buildUi() {
     }),
     menuRow('rh-menu-settings', '打开设置', false, () => {
       closeMenu();
-      // 「打开设置」must actually open it: with the default preset the settings section is
-      // switched off AND folded — reveal both, or the menu item does nothing visible
-      const cfg = state.cfg;
-      const changed = !cfg.show.settings || !!cfg.folded.settings;
-      if (!cfg.show.settings) cfg.show.settings = true;
-      cfg.folded.settings = false;
-      if (changed) {
-        applySections();
-        const sec = els.sections.settings;
-        if (sec) {
-          sec.classList.remove('is-folded');
-          const btn = $('.rh-mini[title^="折叠"]', sec);
-          if (btn) btn.textContent = '−';
-          // the body is a scroll container — bring the section into view instead of leaving it
-          // below the fold (always the case on a phone, where the body caps at 58vh)
-          sec.scrollIntoView?.({ block: 'nearest' });
-        }
-        syncToggles();
-        saveConfig();
-      }
+      openSettingsPage();
     }),
   );
 
@@ -1691,29 +1682,57 @@ function buildUi() {
 
   const stats = h('div', { class: 'rh-stats', id: 'rh-stats' });
 
-  // ---- sections -------------------------------------------------------------------------------
-  const secServer = buildSection('server', '服务', [
-    grid('rh-server-grid'),
-  ]);
+  // ---- home page: overview + the page grid ----------------------------------------------------
+  const cards = {};
+  const cardsGrid = h('div', { class: 'rh-cards', id: 'rh-cards' },
+    ...PAGES.map((p) => {
+      const card = h('button', {
+        class: 'rh-card', id: `rh-card-${p.id}`, type: 'button', 'data-page': p.id,
+        title: `打开「${p.label}」`,
+        onclick: () => setPage(p.id),
+      },
+        h('span', { class: 'rh-card-icon' }, cardIcon(p.icon)),
+        h('span', { class: 'rh-card-main' },
+          h('span', { class: 'rh-card-title', text: p.label }),
+          h('span', { class: 'rh-card-sub', id: `rh-card-sub-${p.id}`, text: '—' }),
+        ),
+        h('span', { class: 'rh-card-arrow', text: '›' }),
+      );
+      cards[p.id] = card;
+      return card;
+    }),
+  );
 
-  const secMatch = buildSection('match', '本局', [
-    grid('rh-match-grid'),
-  ]);
+  const pageHome = h('section', { class: 'rh-page', id: 'rh-page-home' },
+    h('div', { class: 'rh-overview' }, hero, sub, stats),
+    h('div', { class: 'rh-cards-wrap' },
+      h('div', { class: 'rh-cards-label', text: '页面' }),
+      cardsGrid,
+    ),
+  );
 
   // 邀请 (v1.3.0): the免密钥 path (?room=CODE deep link), the online roster with one-tap
   // room.invite pushes, and the banner for an incoming room.invited.
-  const secInvite = buildSection('invite', '邀请', [
+  const pageInvite = buildPage('invite', '邀请', [
     h('div', { class: 'rh-invite', id: 'rh-invite' },
       h('div', { class: 'rh-invite-head', id: 'rh-invite-head' }),
       h('div', { class: 'rh-invite-list', id: 'rh-invite-list' }),
     ),
   ]);
 
-  const secPerf = buildSection('perf', '性能', [
+  const pageMatch = buildPage('match', '本局', [
+    grid('rh-match-grid'),
+  ]);
+
+  const pageServer = buildPage('server', '服务', [
+    grid('rh-server-grid'),
+  ]);
+
+  const pagePerf = buildPage('perf', '性能', [
     grid('rh-perf-grid'),
   ]);
 
-  const secSettings = buildSection('settings', '设置', [
+  const secSettings = buildPage('settings', '设置', [
     h('div', { class: 'rh-set' },
       sliderRow('rh-width-slider', '面板宽度', WIDTH_MIN, WIDTH_MAX, 10, state.cfg.width, (v) => {
         applyWidth(v);
@@ -1734,15 +1753,7 @@ function buildUi() {
         for (const panel of [damageRoot, playerDamageRoot, enemyDamageRoot]) if (panel) panel.style.setProperty('--rh-damage-scale', String(v));
         saveConfig();
       }),
-      h('div', { class: 'rh-set-row rh-set-presets' },
-        h('span', { class: 'rh-set-label', text: '布局预设' }),
-        h('div', { class: 'rh-presets' },
-          ...[['compact', '精简'], ['standard', '标准'], ['full', '全部']].map(([k, label]) => h('button', {
-            class: 'rh-preset', 'data-preset': k, text: label,
-            onclick: () => applyPreset(k),
-          })),
-        ),
-      ),
+      h('div', { class: 'rh-set-caption', text: '首页显示这些页面' }),
       h('div', { class: 'rh-set-toggles', id: 'rh-set-toggles' }),
       h('button', {
         class: 'rh-reset', text: '恢复默认位置与外观',
@@ -1751,26 +1762,19 @@ function buildUi() {
           if (wasDamageMounted) hideDamageWindow();
           else { damageRoot = null; playerDamageRoot = null; enemyDamageRoot = null; damageEls = {}; playerDamageEls = {}; enemyDamageEls = {}; }
           localStorage.removeItem(STORAGE_KEY);
-          Object.assign(state.cfg, { ...DEFAULTS, show: { ...DEFAULTS.show }, damageWindow: { ...DEFAULTS.damageWindow }, folded: {}, logExpanded: [] });
-          root.style.setProperty('--rh-opacity', String(DEFAULTS.opacity));
-          root.style.setProperty('--rh-idle-opacity', String(DEFAULTS.idleOpacity));
-          root.classList.remove('rh-unpinned', 'rh-mini', 'is-collapsed');
-          syncMenu();
-          applySections();
-          for (const [id, sec] of Object.entries(els.sections)) {
-            const folded = !!state.cfg.folded[id];
-            sec.classList.toggle('is-folded', folded);
-            const btn = $('.rh-mini[title^="折叠"]', sec);
-            if (btn) btn.textContent = folded ? '+' : '−';
-          }
-          applyWidth(DEFAULTS.width);
+          Object.assign(state.cfg, {
+            ...DEFAULTS,
+            show: { ...DEFAULTS.show },
+            damageWindow: { ...DEFAULTS.damageWindow, windows: { ...DEFAULTS.damageWindow.windows } },
+            folded: {},
+            logExpanded: [],
+          });
+          applyConfigToDom();
+          setPage('home');
           for (const panel of [damageRoot, playerDamageRoot, enemyDamageRoot]) if (panel) {
             panel.style.removeProperty('height');
             panel.style.setProperty('--rh-damage-scale', String(DEFAULTS.damageWindow.fontScale));
           }
-          syncMenu();
-          syncToggles();
-          syncPresetChips();
           placeInitial();
           if (state.mounted && state.cfg.damageWindow.visible && !damageMounted) showDamageWindow();
           if (damageMounted) { damageWindowPlace(); renderDamage(); }
@@ -1780,7 +1784,7 @@ function buildUi() {
     ),
   ]);
 
-  const secAbout = buildSection('about', '关于', [
+  const secAbout = buildPage('about', '关于', [
     h('div', { class: 'rh-about' },
       h('div', { class: 'rh-about-head' },
         h('div', { class: 'rh-about-avatar', text: AUTHOR.name.slice(0, 1).toUpperCase() }),
@@ -1800,7 +1804,7 @@ function buildUi() {
     ),
   ]);
 
-  const secLog = buildSection('log', '事件日志', [
+  const secLog = buildPage('log', '日志', [
     h('div', { class: 'rh-filters' },
       ...['all', 'warn', 'state'].map((f) => h('button', {
         class: 'rh-chip', 'data-filter': f,
@@ -1864,26 +1868,27 @@ function buildUi() {
 
   const grip = h('div', { class: 'rh-grip', id: 'rh-grip', title: '拖动调整宽度' });
 
-  // sits above the hero so an incoming invitation is seen even while the sections are folded
+  // sits above the pages so an incoming invitation is seen no matter which page is open
   const inviteToast = h('div', { class: 'rh-invite-toast', id: 'rh-invite-toast', hidden: true });
 
   const body = h('div', { class: 'rh-body' },
-    inviteToast, hero, sub, stats,
-    secInvite, secMatch, secServer, secPerf, secLog, secSettings, secAbout,
+    inviteToast,
+    pageHome, pageInvite, pageMatch, pageServer, pagePerf, secLog, secSettings, secAbout,
   );
 
   root.append(header, body, footer, grip);
 
   els = {
-    dot: $('#rh-dot', root), ver: $('#rh-ver', root), ping: pingNum, spark, sub, stats, grip,
+    dot: $('#rh-dot', root), ver: $('#rh-ver', root), ping: pingNum, spark, sub, stats, grip, body,
     serverGrid: $('#rh-server-grid', root), matchGrid: $('#rh-match-grid', root),
     inviteHead: $('#rh-invite-head', root), inviteList: $('#rh-invite-list', root),
     inviteToast: $('#rh-invite-toast', root),
     perfGrid: $('#rh-perf-grid', root), logBody: $('#rh-log', root),
     warnBadge: $('#rh-warn-badge', root),
-    sections: {
-      server: secServer, match: secMatch, invite: secInvite, perf: secPerf,
-      settings: secSettings, about: secAbout, log: secLog,
+    cards,
+    pages: {
+      home: pageHome, invite: pageInvite, match: pageMatch, server: pageServer,
+      perf: pagePerf, log: secLog, settings: secSettings, about: secAbout,
     },
   };
 
@@ -1894,28 +1899,53 @@ function buildUi() {
 
 function grid(id) { return h('div', { class: 'rh-grid', id }); }
 
-function buildSection(id, label, bodyKids, extraHeadKids) {
-  const foldBtn = h('button', {
-    class: 'rh-mini', title: '折叠 / 展开这一栏',
-    onclick: (ev) => toggleSection(id, ev.currentTarget),
-  }, '−');
-  const eyeBtn = h('button', {
-    class: 'rh-mini rh-eye', title: '显示 / 隐藏这一栏',
-    onclick: () => {
-      state.cfg.show[id] = !state.cfg.show[id];
-      applySections();
-      syncToggles();
-      saveConfig();
-    },
-  }, '◉');
-
-  const head = h('div', { class: 'rh-sec-head' },
-    h('span', { class: 'rh-sec-label', text: label }),
+/**
+ * One sub-page: a header bar (back to the home grid + title, plus any page-specific controls)
+ * over its own content. Exactly one page is visible at a time — the home page is the overview
+ * and the grid of cards that opens them.
+ */
+function buildPage(id, label, bodyKids, extraHeadKids) {
+  const head = h('div', { class: 'rh-page-head' },
+    h('button', {
+      class: 'rh-back', title: '返回首页', 'aria-label': '返回首页',
+      onclick: () => setPage('home'),
+    }, '‹ 首页'),
+    h('span', { class: 'rh-page-title', text: label }),
     extraHeadKids,
-    eyeBtn, foldBtn,
   );
+  return h('section', { class: 'rh-page', id: `rh-page-${id}` }, head, ...bodyKids);
+}
 
-  return h('div', { class: 'rh-sec', id: `rh-sec-${id}` }, head, ...bodyKids);
+/**
+ * The little line icons on the home cards. Stroked, 16×16, currentColor — the shape spec is a
+ * [tag, attrs] list so everything stays plain DOM (no innerHTML).
+ */
+const CARD_ICONS = {
+  invite: [['circle', { cx: '6', cy: '5.4', r: '2.5' }], ['path', { d: 'M1.6 13.6c.5-2.6 2.3-4 4.4-4s3.9 1.4 4.4 4' }], ['path', { d: 'M12.3 5.1v4.2M10.2 7.2h4.2' }]],
+  match: [['circle', { cx: '8', cy: '8', r: '5.4' }], ['circle', { cx: '8', cy: '8', r: '1.3' }], ['path', { d: 'M8 .8v2.1M8 13.1v2.1M.8 8h2.1M13.1 8h2.1' }]],
+  server: [['rect', { x: '1.8', y: '2.4', width: '12.4', height: '4.6', rx: '1.3' }], ['rect', { x: '1.8', y: '9', width: '12.4', height: '4.6', rx: '1.3' }], ['path', { d: 'M4.2 4.7h.01M4.2 11.3h.01' }]],
+  perf: [['path', { d: 'M2.6 13.4V9.6M6.3 13.4V6.4M10 13.4V8.2M13.7 13.4V3' }]],
+  log: [['path', { d: 'M2.8 3.6h10.4M2.8 8h10.4M2.8 12.4h6.6' }]],
+  settings: [['path', { d: 'M2.4 4.6h11.2M2.4 11.4h11.2' }], ['circle', { cx: '5.8', cy: '4.6', r: '1.7' }], ['circle', { cx: '10.2', cy: '11.4', r: '1.7' }]],
+  about: [['circle', { cx: '8', cy: '8', r: '6.2' }], ['path', { d: 'M8 7.3V11.2' }], ['path', { d: 'M8 4.9h.01' }]],
+};
+
+function cardIcon(name) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.4');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  for (const [tag, attrs] of CARD_ICONS[name] || []) {
+    const el = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    svg.append(el);
+  }
+  return svg;
 }
 
 function sliderRow(id, label, min, max, step, value, onInput) {
@@ -1945,14 +1975,8 @@ function applyConfigToDom() {
   root.classList.toggle('rh-unpinned', !state.cfg.pinned);
   root.classList.toggle('rh-mini', state.cfg.mini);
   syncMenu();
-  applySections();
-  for (const [id, sec] of Object.entries(els.sections)) {
-    const folded = state.cfg.mini && id !== 'server';
-    const isFolded = state.cfg.folded[id] || folded;
-    sec.classList.toggle('is-folded', !!isFolded);
-    const foldBtn = $('.rh-mini[title^="折叠"]', sec);
-    if (foldBtn) foldBtn.textContent = isFolded ? '+' : '−';
-  }
+  applyPages();
+  setPage(state.cfg.page, { save: false });
   const w = $('#rh-width-slider', root); if (w) w.value = state.cfg.width;
   const wv = w?.parentElement?.querySelector('.rh-set-val'); if (wv) wv.textContent = String(state.cfg.width);
   const o = $('#rh-opacity-slider', root); if (o) o.value = state.cfg.opacity;
@@ -1965,33 +1989,59 @@ function applyConfigToDom() {
   syncToggles();
   syncChips();
   syncWarnBadge();
-  syncPresetChips();
+  renderHome();
 }
 
-/** Hide/show sections by config, and build the settings toggle list. */
-function applySections() {
-  for (const [id, sec] of Object.entries(els.sections)) {
-    sec.hidden = !state.cfg.show[id];
-    const eye = $('.rh-eye', sec);
-    if (eye) {
-      eye.classList.toggle('is-on', !!state.cfg.show[id]);
-      eye.textContent = state.cfg.show[id] ? '◉' : '○';
-    }
+/**
+ * Hide the cards and pages switched off in the settings, and leave a page that just got hidden.
+ */
+function applyPages() {
+  for (const p of PAGES) {
+    const card = els.cards[p.id];
+    if (card) card.hidden = !state.cfg.show[p.id];
   }
+  if (state.cfg.page !== 'home' && !state.cfg.show[state.cfg.page]) setPage('home');
+  else renderHome();
+}
+
+/**
+ * Switch pages. The content of the target page is rendered on demand — a log or roster that
+ * changed while hidden must not be stale the moment it appears.
+ */
+function setPage(id, { save = true } = {}) {
+  if (!els.pages?.[id] || (id !== 'home' && !state.cfg.show[id])) id = 'home';
+  state.cfg.page = id;
+  for (const [k, page] of Object.entries(els.pages)) page.classList.toggle('is-active', k === id);
+  if (id === 'invite') { renderInvite(); pollPlayers(); }
+  else if (id === 'log') scheduleRender('log');
+  else if (id === 'server') scheduleRender('server');
+  else if (id === 'match') scheduleRender('match');
+  else if (id === 'perf') scheduleRender('perf');
+  if (id === 'home') renderHome();
+  if (els.body) els.body.scrollTop = 0;
+  if (save) saveConfig();
+}
+
+/** The menu's 打开设置: make sure the page exists and open it. */
+function openSettingsPage() {
+  let changed = false;
+  if (!state.cfg.show.settings) { state.cfg.show.settings = true; changed = true; }
+  if (changed) { applyPages(); syncToggles(); saveConfig(); }
+  setPage('settings');
 }
 
 function syncToggles() {
   const box = $('#rh-set-toggles', root);
   if (!box) return;
-  const labels = { invite: '邀请', match: '本局', server: '服务', perf: '性能', log: '日志', about: '关于', settings: '设置入口' };
-  box.replaceChildren(...Object.keys(labels).map((id) => h('button', {
+  box.replaceChildren(...PAGES.map(({ id, label }) => h('button', {
     class: `rh-toggle ${state.cfg.show[id] ? 'is-on' : ''}`,
-    text: labels[id],
+    text: label,
+    title: state.cfg.show[id] ? '点击从首页隐藏' : '点击在首页显示',
     onclick: () => {
       state.cfg.show[id] = !state.cfg.show[id];
-      // the settings panel hides itself if you switch itself off
+      // the settings page cannot hide itself — this panel is the way back in
       if (id === 'settings' && !state.cfg.show.settings) state.cfg.show.settings = true;
-      applySections();
+      applyPages();
       syncToggles();
       saveConfig();
     },
@@ -2010,60 +2060,9 @@ function syncWarnBadge() {
   els.warnBadge.classList.toggle('is-hot', warnCount > 0);
 }
 
-function toggleSection(id, btn) {
-  state.cfg.folded[id] = !state.cfg.folded[id];
-  const sec = els.sections[id];
-  if (!sec) return;
-  sec.classList.toggle('is-folded', !!state.cfg.folded[id]);
-  if (btn) btn.textContent = state.cfg.folded[id] ? '+' : '−';
-  saveConfig();
-}
-
-/**
- * Apply a layout preset: fold/visibility plus a width that suits the amount on screen.
- * `preset` is kept so the settings panel can show which one is active.
- */
-function applyPreset(name, { save = true } = {}) {
-  const p = PRESETS[name];
-  if (!p) return;
-  state.cfg.preset = name;
-  state.cfg.show = { ...p.show };
-  state.cfg.folded = {};
-  for (const id of Object.keys(els.sections)) {
-    if (!p.open.includes(id)) state.cfg.folded[id] = true;
-  }
-  state.cfg.mini = false;
-  root.classList.remove('rh-mini');
-  applySections();
-  for (const [id, sec] of Object.entries(els.sections)) {
-    const folded = !!state.cfg.folded[id];
-    sec.classList.toggle('is-folded', folded);
-    const btn = $('.rh-mini[title^="折叠"]', sec);
-    if (btn) btn.textContent = folded ? '+' : '−';
-  }
-  applyWidth(p.width);
-  syncToggles();
-  syncPresetChips();
-  if (save) saveConfig();
-  scheduleRender('all');
-}
-
-function syncPresetChips() {
-  for (const chip of root.querySelectorAll('.rh-preset')) {
-    chip.classList.toggle('is-on', chip.dataset.preset === state.cfg.preset);
-  }
-}
-
 function toggleMini() {
   state.cfg.mini = !state.cfg.mini;
   root.classList.toggle('rh-mini', state.cfg.mini);
-  for (const [id, sec] of Object.entries(els.sections)) {
-    if (id === 'settings') continue;
-    const folded = state.cfg.mini && id !== 'server';
-    sec.classList.toggle('is-folded', folded || !!state.cfg.folded[id]);
-    const foldBtn = $('.rh-mini[title^="折叠"]', sec);
-    if (foldBtn) foldBtn.textContent = folded || state.cfg.folded[id] ? '+' : '−';
-  }
   saveConfig();
 }
 
@@ -2227,6 +2226,47 @@ function renderStats() {
     metric('房间', String(s?.rooms ?? '—')),
     metric('对局', String(s?.matches ?? '—')),
   );
+}
+
+/** Last text written per home card — a tick that changed nothing must not touch the DOM. */
+const cardSubCache = {};
+
+function cardSub(id, text) {
+  const el = $(`#rh-card-sub-${id}`, root);
+  if (el && cardSubCache[id] !== text) {
+    cardSubCache[id] = text;
+    el.textContent = text;
+  }
+  const card = els.cards?.[id];
+  if (!card) return;
+  if (id === 'log') card.classList.toggle('is-warn', warnCount > 0);
+  if (id === 'invite') card.classList.toggle('is-glow', state.invites.length > 0);
+}
+
+/** The live one-liners on the home cards. */
+function renderHome() {
+  if (!root || !els.cards) return;
+  const s = state.server;
+  const room = currentRoom();
+  const pub = state.match;
+
+  cardSub('match', room?.code
+    ? `${room.code} · ${pub?.phase ? phaseName(pub.phase) : room.mode === 'solo' ? '独立' : '同盟'}`
+    : pub?.phase ? phaseName(pub.phase) : '未在房间');
+
+  cardSub('invite', state.invites.length
+    ? `${state.invites.length} 条新邀请`
+    : room?.code ? `同盟 ${room.code}` : '未在同盟');
+
+  cardSub('server', state.serverError ? '离线' : s ? `v${s.app || '?'} · 在线 ${s.humans ?? '—'}` : '连接中…');
+
+  cardSub('perf', state.fps == null
+    ? (state.cfg.paused ? '已暂停' : '采样中…')
+    : `${state.fps} FPS${state.cfg.paused ? ' · 已暂停' : ''}`);
+
+  cardSub('log', warnCount ? `${warnCount} 条异常 / 警告` : '无异常');
+  cardSub('settings', '宽度 · 透明度 · 页面');
+  cardSub('about', `v${MOD_VERSION}`);
 }
 
 function phaseName(phase) {
@@ -2486,23 +2526,14 @@ function dismissInvite(inv) {
   scheduleRender('invite');
 }
 
-/** An incoming invitation should be reachable: unfold / show the invite section (never the panel). */
+/** An incoming invitation should be reachable: show the invite page (never the panel). */
 function revealInviteSection() {
   const cfg = state.cfg;
   let changed = false;
   if (!cfg.show.invite) { cfg.show.invite = true; changed = true; }
-  if (cfg.folded.invite) { cfg.folded.invite = false; changed = true; }
   if (cfg.mini) { cfg.mini = false; root.classList.remove('rh-mini'); changed = true; }
-  if (!changed) return;
-  applySections();
-  const sec = els.sections.invite;
-  if (sec) {
-    sec.classList.remove('is-folded');
-    const btn = $('.rh-mini[title^="折叠"]', sec);
-    if (btn) btn.textContent = '−';
-  }
-  syncToggles();
-  saveConfig();
+  if (changed) { applyPages(); syncToggles(); saveConfig(); }
+  setPage('invite');
 }
 
 /**
@@ -3229,7 +3260,7 @@ function showOverlay() {
   if (!state._dragBound) { enableDrag(); state._dragBound = true; }
   scheduleRender('all');
   // the rAF queue needs one explicit kick: scheduleRender bails while paused
-  requestAnimationFrame(() => { for (const k of ['status', 'spark', 'server', 'match', 'invite', 'perf', 'log', 'damage']) renderOnce(k); });
+  requestAnimationFrame(() => { for (const k of ['status', 'spark', 'server', 'match', 'invite', 'perf', 'log', 'damage', 'home']) renderOnce(k); });
   attachNetWhenReady();
   attachStore();
   attachRunnerWhenReady();
@@ -3238,16 +3269,17 @@ function showOverlay() {
   pollPlayers();
   applyTimers();
   if (!state._watching) { watchClientErrors(); state._watching = true; }
-  pushLog('state', 'HUD 已加载', `v${MOD_VERSION} · Reality · 布局 ${state.cfg.preset}`);
+  pushLog('state', 'HUD 已加载', `v${MOD_VERSION} · Reality`);
 }
 
 function renderOnce(what) {
   if (what === 'status') { renderStatus(); renderSparkline(); }
-  else if (what === 'server') { renderServer(); renderStats(); }
-  else if (what === 'match') renderMatch();
-  else if (what === 'invite') renderInvite();
-  else if (what === 'perf') renderPerf();
-  else if (what === 'log') renderLog();
+  else if (what === 'server') { renderServer(); renderStats(); renderHome(); }
+  else if (what === 'match') { renderMatch(); renderHome(); }
+  else if (what === 'invite') { renderInvite(); renderHome(); }
+  else if (what === 'perf') { renderPerf(); renderHome(); }
+  else if (what === 'log') { renderLog(); renderHome(); }
+  else if (what === 'home') renderHome();
   else if (what === 'damage') renderDamage();
 }
 

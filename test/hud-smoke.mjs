@@ -2,6 +2,9 @@
 //   npm install
 //   node test/hud-smoke.mjs http://127.0.0.1:3000
 // CHROME_PATH overrides the Chrome executable; sensible defaults exist for Windows / macOS / Linux.
+//
+// v1.6.0: the panel is page-based — the home page is the overview + the card grid, every other
+// page opens from a card and comes back with 返回首页. The tests walk that navigation too.
 import puppeteer from "puppeteer-core";
 
 const CHROME = process.env.CHROME_PATH
@@ -49,21 +52,34 @@ const api = await page.evaluate(() => ({
   author: globalThis.__REALITY_HUD__?.author,
 }));
 check("面板已挂载", api.mounted);
-check("版本 1.5.1", api.ver === "1.5.1", String(api.ver));
+check("版本 1.6.0", api.ver === "1.6.0", String(api.ver));
 check("作者署名 Reality", api.author === "Reality", String(api.author));
 
-// v1.4.2: no brand text in the chrome, 邀请 leads the sections, the footer links are icons
+// --- home is the landing page: overview card + the full card grid -------------------------------
+const home = await page.evaluate(() => {
+  const root = document.querySelector("#reality-hud");
+  const active = [...root.querySelectorAll(".rh-page")].filter((p) => p.classList.contains("is-active")).map((p) => p.id);
+  return {
+    title: root.querySelector(".rh-title")?.textContent,
+    active,
+    cards: [...root.querySelectorAll(".rh-cards .rh-card")].filter((c) => !c.hidden).map((c) => c.id),
+    overview: !!root.querySelector("#rh-page-home .rh-overview"),
+    spark: !!root.querySelector("#rh-page-home .rh-spark"),
+    statCells: root.querySelectorAll("#rh-stats .rh-metric").length,
+  };
+});
+check("标题为 R HUD（无品牌字）", home.title === "R HUD", String(home.title));
+check("默认落在首页且只显示一页", home.active.join(",") === "rh-page-home" && home.overview && home.spark, home.active.join(","));
+check("首页有在线/房间/对局三个计数器", home.statCells === 3, String(home.statCells));
+check("首页卡片齐全（7 张）", home.cards.join(",") === "rh-card-invite,rh-card-match,rh-card-server,rh-card-perf,rh-card-log,rh-card-settings,rh-card-about", home.cards.join(","));
+
 const chrome = await page.evaluate(() => {
   const root = document.querySelector("#reality-hud");
   return {
-    title: root.querySelector(".rh-title")?.textContent,
-    visSecs: [...root.querySelectorAll(".rh-body .rh-sec")].filter((s) => !s.hidden).slice(0, 4).map((s) => s.id).join(","),
     footLinks: [...root.querySelectorAll(".rh-foot a")].map((a) => ({ href: a.getAttribute("href"), icon: !!a.querySelector(".rh-icon") })),
     footText: root.querySelector(".rh-foot")?.textContent || "",
   };
 });
-check("标题为 R HUD（无品牌字）", chrome.title === "R HUD", String(chrome.title));
-check("邀请区块在最前", chrome.visSecs === "rh-sec-invite,rh-sec-match,rh-sec-server,rh-sec-perf", chrome.visSecs);
 check("页脚两个图标链接（仓库 + 博客）", chrome.footLinks.length === 2
   && chrome.footLinks.every((l) => l.icon)
   && chrome.footLinks.some((l) => l.href.includes("Stronghold-Protocol-Reality-HUD"))
@@ -126,23 +142,24 @@ const pinToggle = await page.evaluate(() => {
   return { before, after, cls: document.querySelector("#rh-menu-pin").className };
 });
 check("菜单开关状态翻转", pinToggle.before !== pinToggle.after, `${pinToggle.before} -> ${pinToggle.after}`);
+await page.evaluate(() => document.querySelector("#rh-menu-pin").click()); // pin back on
 
-// mini mode via the menu
+// mini mode via the menu: only the RTT readout stays
 await page.evaluate(() => document.querySelector("#rh-menu-mini").click());
 await settle();
-const mini = await page.evaluate(() => document.querySelector("#reality-hud").classList.contains("rh-mini"));
-check("菜单能开迷你模式", mini);
+const mini = await page.evaluate(() => ({
+  on: document.querySelector("#reality-hud").classList.contains("rh-mini"),
+  cardsHidden: getComputedStyle(document.querySelector(".rh-cards-wrap")).display === "none",
+  subHidden: getComputedStyle(document.querySelector("#rh-sub")).display === "none",
+}));
+check("菜单能开迷你模式且只留延迟", mini.on && mini.cardsHidden && mini.subHidden, JSON.stringify(mini));
 await page.evaluate(() => document.querySelector("#rh-menu-mini").click());
 await settle();
 
 // pause via the menu
 await page.evaluate(() => document.querySelector("#rh-menu-pause").click());
 await settle();
-const paused = await page.evaluate(() => ({
-  cfg: globalThis.__REALITY_HUD__.state.cfg.paused,
-  perf: document.querySelector("#rh-perf-grid").textContent.trim(),
-}));
-check("菜单能暂停采样", paused.cfg === true, paused.perf);
+check("菜单能暂停采样", await page.evaluate(() => globalThis.__REALITY_HUD__.state.cfg.paused === true));
 await page.evaluate(() => document.querySelector("#rh-menu-pause").click());
 await settle();
 
@@ -156,43 +173,109 @@ await page.click("#rh-menu-mini");
 await settle();
 check("真实点按菜单行（迷你关）", await page.evaluate(() => globalThis.__REALITY_HUD__.state.cfg.mini === false));
 
-// 打开设置 must actually open it: the default preset has the section switched off AND folded
+// clicking outside closes the menu (a real pointer press — the outside-close listens on pointerdown)
+if (!(await page.evaluate(() => document.querySelector("#rh-menu").classList.contains("is-open")))) {
+  await page.click("#rh-menu-btn");
+  await settle();
+}
+await page.click("#reality-hud .rh-sub");
+await settle();
+check("点击外部关闭菜单", await page.evaluate(() => !document.querySelector("#rh-menu").classList.contains("is-open")));
+
+// --- page navigation --------------------------------------------------------------------------
+// 打开设置 must land on the settings page
+if (!(await page.evaluate(() => document.querySelector("#rh-menu").classList.contains("is-open")))) {
+  await page.click("#rh-menu-btn");
+  await settle();
+}
 await page.click("#rh-menu-settings");
 await settle();
-const settingsShown = await page.evaluate(() => {
-  const sec = document.querySelector("#rh-sec-settings");
-  return !!sec && !sec.hidden && globalThis.__REALITY_HUD__.state.cfg.show.settings === true;
+const onSettings = await page.evaluate(() => {
+  const p = document.querySelector("#rh-page-settings");
+  return { active: p.classList.contains("is-active"), visible: p.offsetParent !== null, show: globalThis.__REALITY_HUD__.state.cfg.show.settings === true };
 });
-check("打开设置真正显示设置栏", settingsShown);
+check("菜单「打开设置」进入设置页", onSettings.active && onSettings.visible && onSettings.show, JSON.stringify(onSettings));
 
-// regression for the buildSection boolean misuse (log head in v1.3.1, settings head in v1.4.0):
-// a stray `true` argument used to render as visible text in the section header
-const strayHeads = await page.evaluate(() => [...document.querySelectorAll(".rh-sec-head")]
-  .map((h) => ({ label: h.querySelector(".rh-sec-label")?.textContent || "", stray: [...h.childNodes].some((n) => n.nodeType === 3 && /^true$/i.test(n.textContent.trim())) }))
-  .filter((h) => h.stray));
-check("分区标题无残留布尔文本", strayHeads.length === 0, JSON.stringify(strayHeads));
+// per-page toggles hide/show the card; hiding the page you are on returns you home
+const toggled = await page.evaluate(async () => {
+  const root = document.querySelector("#reality-hud");
+  const btnFor = (label) => [...root.querySelectorAll("#rh-set-toggles .rh-toggle")].find((b) => b.textContent === label);
+  btnFor("性能").click();
+  const off = document.querySelector("#rh-card-perf").hidden;
+  btnFor("性能").click();
+  const on = !document.querySelector("#rh-card-perf").hidden;
+  return { off, on };
+});
+check("设置页的页面开关控制首页卡片", toggled.off && toggled.on, JSON.stringify(toggled));
 
-// that row closes the menu itself; reopen it so 「点击外部关闭菜单」 below starts from open
-await page.click("#rh-menu-btn");
+const backHome = await page.evaluate(() => {
+  document.querySelector("#rh-page-settings .rh-back").click();
+  return document.querySelector("#rh-page-home").classList.contains("is-active");
+});
+check("返回按钮回首页", backHome);
+
+// card → page, back → home, for the page that changes most
+const matchPage = await page.evaluate(async () => {
+  document.querySelector("#rh-card-match").click();
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  return {
+    active: document.querySelector("#rh-page-match").classList.contains("is-active"),
+    home: document.querySelector("#rh-page-home").classList.contains("is-active"),
+    rows: document.querySelectorAll("#rh-match-grid .rh-metric").length,
+    back: !!document.querySelector("#rh-page-match .rh-back"),
+  };
+});
+check("点卡片进入「本局」页", matchPage.active && !matchPage.home && matchPage.rows >= 1 && matchPage.back, JSON.stringify(matchPage));
+
+const backFromMatch = await page.evaluate(() => {
+  document.querySelector("#rh-page-match .rh-back").click();
+  return document.querySelector("#rh-page-home").classList.contains("is-active");
+});
+check("「本局」页返回首页", backFromMatch);
+
+// hide the page you are on → you are returned home
+const redirected = await page.evaluate(async () => {
+  document.querySelector("#rh-card-about").click();
+  await new Promise((r) => requestAnimationFrame(r));
+  const onAbout = document.querySelector("#rh-page-about").classList.contains("is-active");
+  const btn = [...document.querySelectorAll("#rh-set-toggles .rh-toggle")].find((b) => b.textContent === "关于");
+  btn.click();  // hidden elements still take programmatic clicks — no need to open settings first
+  const home = document.querySelector("#rh-page-home").classList.contains("is-active");
+  const cardHidden = document.querySelector("#rh-card-about").hidden;
+  btn.click();  // restore
+  return { onAbout, home, cardHidden, cardBack: !document.querySelector("#rh-card-about").hidden };
+});
+check("隐藏当前页会自动回首页", redirected.onAbout && redirected.home && redirected.cardHidden && redirected.cardBack, JSON.stringify(redirected));
+
+// the settings slider still drives the panel width
+const widthBySlider = await page.evaluate(() => {
+  const slider = document.querySelector("#rh-width-slider");
+  const before = document.querySelector("#reality-hud").offsetWidth;
+  slider.value = String(Number(slider.value) - 40);
+  slider.dispatchEvent(new Event("input", { bubbles: true }));
+  return { before, after: document.querySelector("#reality-hud").offsetWidth };
+});
+check("设置滑条改面板宽度", Math.abs(widthBySlider.before - widthBySlider.after) >= 30, `${widthBySlider.before} -> ${widthBySlider.after}`);
+await page.evaluate(() => {
+  const slider = document.querySelector("#rh-width-slider");
+  slider.value = "380";
+  slider.dispatchEvent(new Event("input", { bubbles: true }));
+});
 await settle();
-
-// clicking outside closes the menu
-await page.click("#rh-menu-btn");
-await settle();
-await page.evaluate(() => document.querySelector("#reality-hud .rh-sub").click());
-await settle();
-const closed = await page.evaluate(() => !document.querySelector("#rh-menu").classList.contains("is-open"));
-check("点击外部关闭菜单", closed);
-
-// --- the removed buttons no longer exist (header four + the settings drag-width row) ------------------------------------------------
-const gone = await page.evaluate(() => ["rh-pin", "rh-pause", "rh-settings", "rh-mini-toggle", "rh-grip-alt"]
-  .filter((id) => document.getElementById(id)));
-check("旧按钮已移除", gone.length === 0, gone.join(","));
 
 // --- FPS / latency still work ------------------------------------------------------------------
-await new Promise((r) => setTimeout(r, 2000));
-const perf = await page.evaluate(() => [...document.querySelectorAll("#rh-perf-grid .rh-metric")].map((m) => m.textContent.trim()));
-check("FPS 有数值", perf.some((r) => /FPS\s*\d+/.test(r)), perf.join(" "));
+await new Promise((r) => setTimeout(r, 1500));
+const perf = await page.evaluate(async () => {
+  document.querySelector("#rh-card-perf").click();
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  return {
+    active: document.querySelector("#rh-page-perf").classList.contains("is-active"),
+    rows: [...document.querySelectorAll("#rh-perf-grid .rh-metric")].map((m) => m.textContent.trim()),
+  };
+});
+check("「性能」页显示 FPS", perf.active && perf.rows.some((r) => /FPS\s*\d+/.test(r)), perf.rows.join(" "));
+await page.evaluate(() => document.querySelector("#rh-page-perf .rh-back").click());
+await settle();
 
 // --- resize grip + drag still work --------------------------------------------------------------
 const w0 = await page.evaluate(() => document.querySelector("#reality-hud").offsetWidth);
@@ -211,17 +294,19 @@ const onScreen = await page.evaluate(() => {
 });
 check("加宽后仍在屏内", onScreen.right <= onScreen.vw, `right=${onScreen.right} vw=${onScreen.vw}`);
 
-// --- invite section v1.3.0: 免密钥 link · roster · incoming banner ------------------------------
-const inviteSection = await page.evaluate(() => {
-  const el = document.getElementById("rh-sec-invite");
-  return el ? { visible: el.offsetParent !== null, label: el.querySelector(".rh-sec-label")?.textContent || "" } : null;
+// --- invite page v1.3.0: 免密钥 link · roster · incoming banner ---------------------------------
+const inviteSection = await page.evaluate(async () => {
+  document.querySelector("#rh-card-invite").click();
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const el = document.getElementById("rh-page-invite");
+  return el ? { visible: el.offsetParent !== null, title: el.querySelector(".rh-page-title")?.textContent || "" } : null;
 });
-check("邀请分区存在且可见", !!inviteSection && inviteSection.visible && inviteSection.label === "邀请", JSON.stringify(inviteSection));
+check("邀请卡片打开邀请页", !!inviteSection && inviteSection.visible && inviteSection.title === "邀请", JSON.stringify(inviteSection));
 
 const inviteHint = await page.evaluate(() => document.getElementById("rh-invite-head")?.textContent || "");
 check("未在同盟时提示免密钥链接", /未在同盟中/.test(inviteHint), inviteHint.slice(0, 40));
 
-// the roster comes from GET /api/players (polls while the section is on screen).
+// the roster comes from GET /api/players (polls while the page is shown).
 // on a server that predates the route the HUD degrades instead (404 → hint, supported=false)
 const roster = await page.evaluate(() => {
   const s = globalThis.__REALITY_HUD__.state;
@@ -263,7 +348,7 @@ const staleRoom = await page.evaluate(() => ({
 }));
 check("退出同盟后不再显示旧房间链接", staleRoom.hint && !staleRoom.copy, JSON.stringify(staleRoom));
 
-// a room.invited push becomes a banner with 立即加入 / 忽略
+// a room.invited push becomes a banner with 立即加入 / 忽略, and marks the home card
 await fire({ t: "room.invited", from: "p_smoke", name: "烟测好友", code: "ZZ99YY" });
 await settle();
 const toast = await page.evaluate(() => {
@@ -274,11 +359,22 @@ const toast = await page.evaluate(() => {
 });
 check("收到邀请弹出横幅", !!toast && /烟测好友/.test(toast.text) && /ZZ99YY/.test(toast.text) && toast.join && toast.dismiss, JSON.stringify(toast)?.slice(0, 90));
 
-// fold every section: the banner sits above the hero and stays visible
-await page.evaluate(() => document.querySelectorAll(".rh-sec-head .rh-mini[title^='折叠']").forEach((b) => { if (b.textContent === "−") b.click(); }));
+const inviteCard = await page.evaluate(() => ({
+  glow: document.getElementById("rh-card-invite").classList.contains("is-glow"),
+  sub: document.getElementById("rh-card-sub-invite").textContent,
+}));
+check("首页邀请卡标出有新邀请", inviteCard.glow && /1 条新邀请/.test(inviteCard.sub), JSON.stringify(inviteCard));
+
+// the banner sits above the pages: switching to another page must not hide it
+await page.evaluate(() => document.querySelector("#rh-card-server").click());
 await settle();
-const toastFolded = await page.evaluate(() => { const el = document.getElementById("rh-invite-toast"); return !!el && !el.hidden && el.offsetParent !== null; });
-check("折叠分区也不遮挡邀请横幅", toastFolded);
+const toastElsewhere = await page.evaluate(() => {
+  const el = document.getElementById("rh-invite-toast");
+  return !!el && !el.hidden && el.offsetParent !== null;
+});
+check("切到其他页也不遮挡邀请横幅", toastElsewhere);
+await page.evaluate(() => document.querySelector("#rh-card-invite").click());
+await settle();
 
 // 立即加入 with no session entered: a warning, the banner stays, nothing throws
 await page.evaluate(() => document.getElementById("rh-invite-join")?.click());
@@ -323,18 +419,19 @@ const switchMatch = await page.evaluate(() => {
 });
 check("对局进行中仍会拦下并说明原因", /对局进行中/.test(switchMatch), switchMatch);
 
-// 忽略 clears the banner
+// 忽略 clears the banner and the card mark
 await page.evaluate(() => document.getElementById("rh-invite-dismiss")?.click());
 await settle();
-check("忽略后横幅消失", await page.evaluate(() => document.getElementById("rh-invite-toast").hidden && globalThis.__REALITY_HUD__.state.invites.length === 0));
+check("忽略后横幅消失", await page.evaluate(() => document.getElementById("rh-invite-toast").hidden
+  && globalThis.__REALITY_HUD__.state.invites.length === 0
+  && !document.getElementById("rh-card-invite").classList.contains("is-glow")));
 
-// unfold everything again, then leave the simulated room
-await page.evaluate(() => document.querySelectorAll(".rh-sec-head .rh-mini[title^='折叠']").forEach((b) => { if (b.textContent === "+") b.click(); }));
 await fire({ t: "room.closed", reason: "empty" });
 await settle();
 
-// --- server error detail is still surfaced ------------------------------------------------------
+// --- log page: error detail is still surfaced ----------------------------------------------------
 const logDetail = await page.evaluate(async () => {
+  document.querySelector("#rh-card-log").click();
   globalThis.__REALITY_HUD__.state.logs.length = 0;
   const handlers = globalThis.__SP__.net._listeners.get("*");
   handlers.forEach((fn) => fn({ t: "error", code: "BAD_MSG", msg: "无效的请求", detail: "bad field difficulty", rid: 7 }));
@@ -346,9 +443,28 @@ const logDetail = await page.evaluate(async () => {
   }));
 });
 const errRow = logDetail.find((r) => r.cls.includes("is-error"));
-check("错误详情含 detail 与错误码", !!errRow && /bad field difficulty/.test(errRow.body || "") && /BAD_MSG/.test(errRow.body || ""), errRow?.body?.slice(0, 70));
+check("日志页错误详情含 detail 与错误码", !!errRow && /bad field difficulty/.test(errRow.body || "") && /BAD_MSG/.test(errRow.body || ""), errRow?.body?.slice(0, 70));
 
-// --- perf -----------------------------------------------------------------------------
+const logChrome = await page.evaluate(() => ({
+  active: document.querySelector("#rh-page-log").classList.contains("is-active"),
+  chips: document.querySelectorAll("#rh-page-log .rh-chip").length,
+  badge: document.getElementById("rh-warn-badge")?.textContent || "",
+}));
+check("日志页有筛选与异常计数", logChrome.active && logChrome.chips === 3 && Number(logChrome.badge) > 0, JSON.stringify(logChrome));
+
+// --- the old chrome is gone ----------------------------------------------------------------------
+const gone = await page.evaluate(() => ["rh-pin", "rh-pause", "rh-settings", "rh-mini-toggle", "rh-grip-alt", "rh-eye"]
+  .filter((id) => document.getElementById(id)));
+check("旧按钮已移除", gone.length === 0, gone.join(","));
+
+// regression for the buildPage boolean misuse (log head in v1.3.1, settings head in v1.4.0):
+// a stray `true` argument used to render as visible text in the section header
+const strayHeads = await page.evaluate(() => [...document.querySelectorAll(".rh-page-head")]
+  .map((h) => ({ label: h.querySelector(".rh-page-title")?.textContent || "", stray: [...h.childNodes].some((n) => n.nodeType === 3 && /^true$/i.test(n.textContent.trim())) }))
+  .filter((h) => h.stray));
+check("页面标题无残留布尔文本", strayHeads.length === 0, JSON.stringify(strayHeads));
+
+// --- perf ----------------------------------------------------------------------------------------
 const cost = await page.evaluate(async () => {
   const N = 120;
   const t0 = performance.now();
@@ -388,17 +504,26 @@ check("点浮标唤回面板", afterRecall.mounted && afterRecall.pillHidden, JS
 
 check("无页面错误", errors.length === 0, errors.slice(0, 2).join(" | "));
 
-await page.evaluate(() => { if (!globalThis.__REALITY_HUD__.state.mounted) globalThis.__REALITY_HUD__.show(); });
+// screenshots: the open panel is taken on the home page
+await page.evaluate(async () => {
+  if (!globalThis.__REALITY_HUD__.state.mounted) globalThis.__REALITY_HUD__.show();
+  const back = document.querySelector(".rh-page.is-active .rh-back");
+  if (back) back.click();
+  await new Promise((r) => requestAnimationFrame(r));
+});
+await page.evaluate(() => {
+  const p = document.querySelector("#reality-hud");
+  if (!p.classList.contains("is-collapsed")) return;
+  document.querySelector("#rh-fold").click();
+});
+await new Promise((r) => setTimeout(r, 600));
+await page.screenshot({ path: "hud-open.png", clip: { x: 820, y: 0, width: 620, height: 1000 } });
+
 await page.click("#rh-fold");
 await new Promise((r) => setTimeout(r, 500));
 await page.screenshot({ path: "hud-collapsed.png", clip: { x: 1000, y: 0, width: 440, height: 200 } });
-await page.evaluate(() => { if (!globalThis.__REALITY_HUD__.state.mounted) globalThis.__REALITY_HUD__.show(); });
-// the fold click above left the panel collapsed — expand again so hud-open.png really shows it open
-if (await page.evaluate(() => document.querySelector("#reality-hud").classList.contains("is-collapsed"))) {
-  await page.click("#rh-fold");
-}
-await new Promise((r) => setTimeout(r, 600));
-await page.screenshot({ path: "hud-open.png", clip: { x: 820, y: 0, width: 620, height: 1000 } });
+await page.click("#rh-fold");
+await new Promise((r) => setTimeout(r, 300));
 
 // phone widths (v1.4.1): the collapsed strip is the resting state — tiny; the pill is 36px
 // (was 42px) and an invisible ring keeps its tap target ≈48px
