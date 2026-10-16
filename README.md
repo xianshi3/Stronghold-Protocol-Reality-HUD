@@ -3,7 +3,7 @@
 > 分页式可拖拽悬浮窗 mod，叠加在 [《卫戍协议：盟约》](https://github.com/sganggs/Stronghold-Protocol)（Stronghold Protocol，**原项目 / Upstream**）游戏页面之上：首页一屏总览连接状态、真实延迟曲线与在线人数，卡片点按进入**本局**、**免密钥邀请好友**、**伤害统计**（干员 / 玩家 / 敌方三表，可各自弹成独立窗口）、服务、性能、日志与设置各页。
 
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-4ed8af.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.7.0-4ed8af.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.7.1-4ed8af.svg)](CHANGELOG.md)
 [![Game version](https://img.shields.io/badge/game-0.1.3%E2%80%930.2.6-8a948f.svg)](#兼容性)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-4ed8af.svg)](#贡献者--contributors)
 
@@ -28,7 +28,7 @@
 | 首页总览 | 真实延迟 RTT 大数字与 60 次采样迷你折线图（<80ms 绿 / <180ms 黄 / 其余红）、连接状态一行摘要（抖动 / 丢包 / 重连 / 时钟偏移 / 最近错误）、在线 / 房间 / 对局三个计数器；卡片上直接显示各页实时摘要 |
 | 本局 | 房间码、模式、难度、席位、你的座位、阶段中文名、回合 x/14、倒计时 |
 | **邀请** | **免密钥链接**：在同盟中给出 `?room=CODE` 链接，一键复制，好友打开即自动加入；**在线名单**：列出服务器上所有在线玩家（大厅 / 同盟中 / 对局中），每人一个「邀请」按钮，服务端把你的房间码定向推给对方；**收到邀请**：面板顶部弹横幅（任何页面都可见，邀请卡还会闪烁提示），点「立即加入」直接进房（已在其他同盟中则一键换房：服务端先退原房间；对局中会拒绝并说明）。旧服务端没有名单接口时自动降级（只隐藏名单，复制链接照常） |
-| **伤害** | **干员 / 玩家 / 敌方三张统计表**（页内标签切换）：本回合与全局累计伤害、伤害类型、来源归属与本地化，以及增益 / 减益类型与持续时间；页头「独立窗口」把当前这张表弹成悬浮窗（拖动 / 缩放 / 折叠照旧），窗口 `×` 或停靠位的「收回」放回页面；兼容 `m.unitStats`、`b.ev`、`m.field`、`m.result` 等新旧协议帧。**队友伤害**需服务端补丁才是实时的（普通回合结算后、Boss 轮约每秒），未打补丁时队友数据在本局结算时可见 |
+| **伤害** | **干员 / 玩家 / 敌方三张统计表**（页内标签切换）：本回合与全局累计伤害、伤害类型、来源归属与本地化，以及增益 / 减益类型与持续时间；页头「独立窗口」把当前这张表弹成悬浮窗（拖动 / 缩放 / 折叠照旧），窗口 `×` 或停靠位的「收回」放回页面；兼容 `m.unitStats`、`b.ev`、`m.field`、`m.result` 等新旧协议帧。**队友伤害**需服务端补丁才是实时的（普通回合结算后、Boss 轮约每秒），未打补丁时队友数据在本局结算时可见；结算帧带 `settled` 时本回合与全局两列**校正为服务器值**（本地实时读数是原始命中值的估算，击杀溢出 / 元素条会略高），每回合结束后所有屏幕数字一致（v1.7.1） |
 | 服务 | 从公开的 `/healthz` 取：在线人数、房间数、进行中对局、AI 队友、观战、连接数、服务版本、运行时长 |
 | 性能 | FPS 与帧时间。战斗在每个玩家的浏览器里本地模拟，这个数字才是低端设备卡不卡的关键 |
 | 日志 | 关键帧按严重度分色：握手、房间、阶段切换、结算、房间关闭、服务端错误（含 `detail` 明细），可筛选 / 展开 / 复制 |
@@ -93,7 +93,7 @@ GPL-3.0-or-later; the author is [@xianshi3](https://github.com/xianshi3). The in
 | 补丁 | 给什么 | 规模 |
 |---|---|---|
 | `server-patch/reality-hud-invite.patch` | 「在线名单 + 一键邀请」：`GET /api/players`（在线名单，**不含房间码 / token**）、C2S `room.invite` / S2C `room.invited`（定向推送，带限流） | 4 个文件 |
-| `server-patch/reality-hud-damage.patch` | 队友伤害实时同步：`m.public` 玩家行附带 `hudDmg: { round, dmg, total }`（普通回合结算后、Boss 轮约每秒；原版客户端会忽略多余字段） | 3 个文件 + 1 篇文档 |
+| `server-patch/reality-hud-damage.patch` | 队友伤害实时同步：`m.public` 玩家行附带 `hudDmg: { round, dmg, total, settled }`（普通回合结算后、Boss 轮约每秒；`settled` 标记结算完成、各屏以它校正；原版客户端会忽略多余字段） | 4 个代码文件 + 2 篇文档 + 1 个测试 |
 
 ```bash
 cd Stronghold-Protocol

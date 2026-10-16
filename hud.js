@@ -51,7 +51,7 @@ const AUTHOR = Object.freeze({
   repoLabel: 'xianshi3/Stronghold-Protocol-Reality-HUD',
 });
 
-const MOD_VERSION = '1.7.0';
+const MOD_VERSION = '1.7.1';
 
 const DEFAULTS = {
   x: null,               // null = park it on the right edge (computed on first show)
@@ -697,42 +697,82 @@ function ensureDamagePlayer(raw, defaults = {}) {
 }
 
 /**
+ * Scale a damage-type breakdown to a corrected headline number: the composition (percentages) survives
+ * the correction, the absolute amounts follow it. Used by the `settled` snap, where the headline is
+ * replaced with the server's number and the local type split would otherwise sum to a value the row
+ * no longer shows.
+ */
+function rescaleDamageTypes(types, before, after) {
+  if (!types) return;
+  const b = Number(before);
+  const a = Number(after);
+  if (!Number.isFinite(b) || !Number.isFinite(a) || !(b > 0) || a < 0 || b === a) return;
+  const ratio = a / b;
+  for (const key of Object.keys(types)) {
+    const v = Number(types[key]);
+    types[key] = Number.isFinite(v) ? Math.max(0, v * ratio) : 0;
+  }
+}
+
+/**
  * Bring one player's record up to a reported snapshot:
- *  - `round` — the damage this round has produced so far (a monotonic per-round value): the display
- *    tops up to it, adding only what the live events had not counted yet;
+ *  - `round` — the damage this round has produced so far. A plain value is a floor (a live boss-round
+ *    share): the display tops up to it, adding only what the live events had not counted yet. A value
+ *    flagged `settled` (the round's **complete** credited damage — a patched server's settlement / a
+ *    finished boss battle) REPLACES the local estimate in either direction: live counting sums raw hit
+ *    events, so overkill on killing blows, element gauge ticks and per-hit rounding read differently
+ *    from the credited `dealt` — without the snap, your own screen kept its own number for 本回合 while
+ *    every teammate saw the server's (the 1.7.1 fix);
  *  - `total` — the match's own cumulative damage (m.private stats.dmgDealt, m.result, a patched
  *    server's hudDmg.total): a floor on 全局累计, never a delta. Running a cumulative value through
- *    the per-round delta path double counted every settled round (fixed in 1.7.0).
+ *    the per-round delta path double counted every settled round (fixed in 1.7.0). A `settled` snapshot
+ *    carries the complete cumulative and is taken exactly — it may correct a drifted number down.
  * Returns the player record (or null when the row has no usable id).
  */
 function mergeReportedPlayerDamage(raw, reported = {}, snapshotKey = null, opts = {}) {
   const player = ensureDamagePlayer(raw);
   if (!player) return null;
   if ((!state.damage.collecting && !opts.allowStopped) || state.damage.paused) return player;
+  const settled = reported.settled === true;
   const roundValue = finiteNumber(reported.round);
   if (roundValue != null && roundValue >= 0) {
     const key = `player:${snapshotKey ?? state.damage.battleId ?? 'round'}:${state.damage.round ?? 'match'}`;
-    const prev = player.reported[key] ?? 0;
-    if (roundValue >= prev) {
+    if (settled) {
       const before = player.current;
-      if (player.current < roundValue) {
-        player.current = roundValue;
-        player.total += Math.max(0, roundValue - before);
+      player.current = roundValue;
+      rescaleDamageTypes(player.currentTypes, before, roundValue);
+      player.reported[key] = Math.max(player.reported[key] ?? 0, roundValue);
+    } else {
+      const prev = player.reported[key] ?? 0;
+      if (roundValue >= prev) {
+        const before = player.current;
+        if (player.current < roundValue) {
+          player.current = roundValue;
+          player.total += Math.max(0, roundValue - before);
+        }
+        player.reported[key] = roundValue;
       }
-      player.reported[key] = roundValue;
     }
   }
   const totalValue = finiteNumber(reported.total);
-  if (totalValue != null && totalValue > player.total) player.total = totalValue;
+  if (totalValue != null) {
+    if (settled) {
+      rescaleDamageTypes(player.totalTypes, player.total, totalValue);
+      player.total = totalValue;
+    } else if (totalValue > player.total) {
+      player.total = totalValue;
+    }
+  }
   return player;
 }
 
 /**
  * m.public players[].hudDmg — the per-player damage a server with the Reality HUD damage patch
- * broadcasts (`server-patch/reality-hud-damage.patch`): { round, dmg, total }. `dmg` is stamped
- * with its round, so a frame still in flight when the round advances never lands in the next
- * round's 本回合; `total` is the match's cumulative. A vanilla server sends no hudDmg and teammates
- * simply stay unknown until m.result.
+ * broadcasts (`server-patch/reality-hud-damage.patch`): { round, dmg, total, settled }. `dmg` is stamped
+ * with its round, so a frame still in flight when the round advances never lands in the next round's
+ * 本回合; `total` is the match's cumulative. A frame flagged `settled` carries the round's complete
+ * credited value and snaps the row to it (1.7.1); without the flag the value is a live floor. A vanilla
+ * server sends no hudDmg and teammates simply stay unknown until m.result.
  */
 function mergePublicPlayerDamage(msg) {
   if (!Array.isArray(msg?.players)) return;
@@ -746,6 +786,7 @@ function mergePublicPlayerDamage(msg) {
     mergeReportedPlayerDamage(row, {
       round: hud.round === state.damage.round ? hud.dmg : null,
       total: hud.total,
+      settled: hud.settled === true,
     }, 'public', { allowStopped: true });
   }
   if (seen) state.damage.serverDmg = true;

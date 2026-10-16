@@ -5,7 +5,10 @@
 //   * m.private stats.dmgDealt / m.result are match-cumulative — a 全局累计 floor only (merging them
 //     as a per-round value inflated both columns every round, the 1.6.x bug);
 //   * m.public players[].hudDmg (a server with the Reality HUD damage patch) carries the teammates'
-//     round + total, stamped with its round, so a stale in-flight frame never lands in the next round.
+//     round + total, stamped with its round, so a stale in-flight frame never lands in the next round;
+//   * a hudDmg flagged `settled` (1.7.1) is the round's complete credited value: it SNAPS the row to it
+//     in either direction — the local live count is a raw-hit estimate (overkill, element gauge ticks,
+//     rounding) and used to keep its own 本回合 number while every teammate saw the server's.
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -242,6 +245,64 @@ rows = await playerRows();
 check("同回合刷新只补差额（队友 90/990，小队长不动）",
   rowFor(rows, "队友")[1] === "90" && rowFor(rows, "队友")[2] === "990"
   && rowFor(rows, "小队长")[1] === "233" && rowFor(rows, "小队长")[2] === "233", JSON.stringify(rows));
+
+// ---- settled snapshots: the round's server number wins over the local live estimate (1.7.1) ----------
+// The 1.7.1 bug: live counting sums raw hit events (overkill on killing blows, element gauge ticks, per-hit
+// rounding), so the own row read e.g. 300 while the settlement credited 180 — and the old top-up-only merge
+// kept 300 on this screen forever while every teammate saw 180. A `settled` frame now snaps 本回合 AND
+// 全局累计 to the server's numbers, in either direction.
+await emit({ t: "m.public", round: 5, phase: "COMBAT", lastRound: 14, players: [
+  { playerId: "p1", name: "玩家一" },
+  { playerId: "p2", name: "队友", hudDmg: { round: 4, dmg: 90, total: 990 } },
+  { playerId: "p3", name: "小队长", hudDmg: { round: 4, dmg: 233, total: 233 } },
+] });
+await emit({ t: "m.field", units: [
+  { id: "op_1", uid: "u1", name: "测试干员", kind: "op", side: "ally", ownerId: "p1" },
+  { id: "enemy_1", name: "敌人", kind: "enemy", side: "enemy" },
+] });
+await emit({ t: "b.ev", ev: [["atk", "op_1", "enemy_1", "none"], ["dmg", "enemy_1", 300, "phys"]] });
+await wait();
+rows = await playerRows();
+check("结算前：本行按本地事件读到 300 / 500",
+  rowFor(rows, "玩家一")[1] === "300" && rowFor(rows, "玩家一")[2] === "500", JSON.stringify(rows));
+const settledFrame = () => ({ t: "m.public", round: 5, phase: "SETTLE", lastRound: 14, players: [
+  { playerId: "p1", name: "玩家一", hudDmg: { round: 5, dmg: 180, total: 380, settled: true } },
+  { playerId: "p2", name: "队友", hudDmg: { round: 5, dmg: 250, total: 1240, settled: true } },
+  { playerId: "p3", name: "小队长", hudDmg: { round: 5, dmg: 0, total: 233, settled: true } },
+] });
+await emit(settledFrame());
+await wait();
+rows = await playerRows();
+check("结算快照把本行 300 → 180、500 → 380（修正为服务器值，可降）",
+  rowFor(rows, "玩家一")[1] === "180" && rowFor(rows, "玩家一")[2] === "380", JSON.stringify(rows));
+check("队友行同样取结算值（250 / 1.2k）",
+  rowFor(rows, "队友")[1] === "250" && rowFor(rows, "队友")[2] === "1.2k", JSON.stringify(rows));
+check("结算后的类型拆分跟随新值缩放（物理 180）", /物理 180/.test(rowFor(rows, "玩家一")[3]), JSON.stringify(rowFor(rows, "玩家一")));
+await emit(settledFrame());
+await wait();
+rows = await playerRows();
+check("重复结算帧幂等（仍 180 / 380）",
+  rowFor(rows, "玩家一")[1] === "180" && rowFor(rows, "玩家一")[2] === "380", JSON.stringify(rows));
+await emit({ t: "m.public", round: 6, phase: "ROUND_START", lastRound: 14, players: [
+  { playerId: "p1", name: "玩家一" },
+  { playerId: "p2", name: "队友" },
+  { playerId: "p3", name: "小队长" },
+] });
+await wait();
+rows = await playerRows();
+check("下一回合：本回合清零、全局维持结算值 380",
+  rowFor(rows, "玩家一")[1] === "0" && rowFor(rows, "玩家一")[2] === "380", JSON.stringify(rows));
+// a frame without the flag keeps the old floor rule: top up only, never lower
+await emit({ t: "m.public", round: 6, phase: "COMBAT", lastRound: 14, players: [
+  { playerId: "p1", name: "玩家一", hudDmg: { round: 6, dmg: 40, total: 380 } },
+] });
+await emit({ t: "m.public", round: 6, phase: "COMBAT", lastRound: 14, players: [
+  { playerId: "p1", name: "玩家一", hudDmg: { round: 6, dmg: 25, total: 380 } },
+] });
+await wait();
+rows = await playerRows();
+check("无 settled 的实时帧只上不下（40 保持、累计随实时增量到 420，25 被忽略）",
+  rowFor(rows, "玩家一")[1] === "40" && rowFor(rows, "玩家一")[2] === "420", JSON.stringify(rows));
 
 // ---- the menu row opens the page -------------------------------------------------------------
 await page.click("#rh-page-damage .rh-back");
