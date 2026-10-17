@@ -2,6 +2,14 @@
 
 All notable changes to this project. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.8.1] - 2026-10-17
+
+### Changed
+
+- **游戏 0.3.0 / 0.3.1 兼容**：上游 0.3.0 重做了启动页（CSP 沙箱、Worker 战斗模拟、插件系统），并删掉了 `public/js/mods.js` 加载器的 script 标签——HUD 因此不再挂载。游戏仓库侧已恢复该标签（CSP `script-src 'self'` 允许同源脚本，加载器本身未变）；HUD 代码无需改动，即装即用。
+- **服务端补丁按 0.3.1 重新生成**（`server-patch/reality-hud-damage.patch`，21 个文件）：基线从 0.2.6 升到 0.3.1，并合并了 0.2.6 时独立的 invite 补丁涉及的共用文件（`shared/protocol.js`、`server/lobby.js`、`server/net.js`、`server/http/routes.js`、协议文档）——**0.3.x 服务器只需应用这一个补丁**；0.2.6 服务器继续用 v1.8.0 的补丁。
+- 测试：生产冒烟 67/67、手机 10/10（跑在 0.3.0 生产服务器上）。
+
 ## [1.8.0] - 2026-10-16
 
 ### Added

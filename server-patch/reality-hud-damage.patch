@@ -1,8 +1,8 @@
 diff --git a/docs/META.md b/docs/META.md
-index 0f37c3d0..54232018 100644
+index 6303089d..8b0e08ce 100644
 --- a/docs/META.md
 +++ b/docs/META.md
-@@ -791,6 +791,9 @@ drawn set; `disabledBonds` = drawn ∪ the mode's static list), `hiddenBossId`,
+@@ -828,6 +828,9 @@ drawn set; `disabledBonds` = drawn ∪ the mode's static list), `hiddenBossId`,
  `combatMode` (`'client'` | `'server'`), `fields[].progress { killed, total, done }` (teammates' progress UI), `paused`
  (solo pause, §1.3a),
  `players[].autoplay`, `players[].uniteLeft` (UNITE, leakers only: their enemies still standing, uncapped — §4),
@@ -13,31 +13,41 @@ index 0f37c3d0..54232018 100644
  (and, last, every bond the mode never activates that the player has members of: `{ bondId, count, active: false, tier: 0, layers, off: true }`,
  the strip's grey 本局禁用 disc — bondsMeta.offBondCounts, never in the battle input), the same list
 diff --git a/docs/SIM.md b/docs/SIM.md
-index 757c5d6d..8f936205 100644
+index 3979c6df..79b8474f 100644
 --- a/docs/SIM.md
 +++ b/docs/SIM.md
-@@ -1435,7 +1435,7 @@ Unknown subprofessions fall back to the profession default (test `professions.te
- - `drainEvents()` tuples: `['spawn', UnitInfo]` (first appearance), `['deploy', id]` (every (re)deploy and 【移动】 — the client plays the deploy and its interpolation snaps instead of sliding), `['atk', src, tgt, projKind]`
-   (`none|arrow|bolt|bomb|lob|orb|drone|enemy|boomerang|droneBomb|chain|chainHeal`; a boomerang's way back has no event — the
-   renderer flies it back to the thrower at `BOOMERANG_RETURN_SPEED`; an enemy's `profile.shot` may name another kind,
--  e.g. `mortar` for 帝国炮火先兆者, which the renderer does not draw — its fx `bombardShell` is the shell), `['dmg', tgt, amount, type]` (`phys|arts|true|burn|neural|necrosis|apoptosis`),
-+  e.g. `mortar` for 帝国炮火先兆者, which the renderer does not draw — its fx `bombardShell` is the shell), `['dmg', tgt, amount, type]` (`phys|arts|true|burn|neural|necrosis|apoptosis`; a hit credited to a unit appends that unit's id at index 5 — mark slot `'r'` at index 4 for a red number, else `null`, and a sourceless hit keeps the four-element shape — the Reality HUD damage patch, so per-operator / per-player damage accounting never guesses by `atk` order),
-   `['heal', tgt, amount]`, `['skill', id, 1|0]`, `['engage', id]` (an ally's first attack that hits an enemy — the client's
-   行动开始 voice, DESIGN §21.30), `['die', id, reason]`, `['leak', id]`, `['status', id, key, 1|0]`,
-   `['fx', kind, x, y, extra]` (`hitCap` `{ id, n }`: a leader's hit cancelled by 限伤 — the renderer draws nothing;
+@@ -1468,7 +1468,9 @@ Unknown subprofessions fall back to the profession default (test `professions.te
+   (`none|arrow|bolt|bomb|lob|orb|drone|enemy|boomerang|droneBomb|chain|chainHeal`; a boomerang's way back has no event —
+   the renderer flies it back to the thrower at `BOOMERANG_RETURN_SPEED`; an enemy's `profile.shot` may name another
+   kind, e.g. `mortar` for 帝国炮火先兆者, which the renderer does not draw — its fx `bombardShell` is the shell), `['dmg', tgt,
+-  amount, type]` (`phys|arts|true|burn|neural|necrosis|apoptosis`), `['heal', tgt, amount]`, `['skill', id, 1|0]`,
++  amount, type]` (`phys|arts|true|burn|neural|necrosis|apoptosis`; a hit credited to a unit appends that unit's id at index 5 —
++  mark slot `'r'` at index 4 for a red number, else `null`, and a sourceless hit keeps the four-element shape — the Reality
++  HUD damage patch, so per-operator / per-player damage accounting never guesses by `atk` order), `['heal', tgt, amount]`, `['skill', id, 1|0]`,
+   `['engage', id]` (an ally's first attack that hits an enemy — the client's 行动开始 voice, DESIGN §21.30), `['die', id,
+   reason]`, `['leak', id]`, `['status', id, key, 1|0]`, `['fx', kind, x, y, extra]` (`hitCap` `{ id, n }`: a leader's
+   hit cancelled by 限伤 — the renderer draws nothing; `extra.form` = the unit's model form from then on — an enemy's
 diff --git a/docs/design/network.md b/docs/design/network.md
-index 47b1412f..9c9d66fb 100644
+index c974675a..2c8e5150 100644
 --- a/docs/design/network.md
 +++ b/docs/design/network.md
-@@ -22,9 +22,9 @@ can still replace its previous socket. Omitted hints retain legacy behavior; the
- selection/stamp rules live in design/client.md. In-flight protection requires the updated server as well as client.
+@@ -7,8 +7,8 @@ Part of [DESIGN.md](../DESIGN.md) (the index; section numbers are global).
+ Transport: one WebSocket per tab at `/ws`, JSON text frames `{ t: '<type>', ...payload }`. Client requests may carry `rid` (request id); the server's direct reply echoes `rid` (`ok` or `error`). Server pushes have no `rid`. Max frame 64 KB inbound (a compressed frame counts its inflated size); rate limit 40 msgs/s per connection (excess dropped with `error RATE`). Frames from 1 KB up are compressed with permessage-deflate (RFC 7692; `server/http/websocket.js WS_DEFLATE`: no server context takeover, a 2 KB server window, zlib memLevel 7 — about 72 KB of zlib state per connection); smaller frames go out plain, and a client that offers no compression, or caps the server window below 2 KB, gets plain frames. A measured solo session (rounds 3–5, `/healthz?traffic=1`): 173 KB of server frames → 60 KB on the wire.
  
+ ### 8.1 Session & lobby
+-C→S: `hello {name, token?, version}` · `room.create {mode:'solo'|'coop', difficulty}` · `room.join {code}` · `room.leave` · `room.ready {ready}` · `room.setDifficulty {difficulty}` (host) · `room.setPlugins {plugins:[{id, settings?}]}` (host, before the match — the room's cosmetic and gameplay plugins, §8.4; un-readies the other humans like a difficulty change) · `room.setMode {modeId}` (host, before the match: an official mode of the room's type sets the difficulty, a mode the room's content set adds becomes its mode, §8.4) · `room.contentReady {cs, ok?}` (a member's page loaded and checked the room's content set — or not, `ok: false`; §8.4) · `room.setAiPicksLast {on}` (host, co-op, before the match — `ROOM_STARTED` during it, `BAD_TARGET` in a solo room; un-readies the other humans like a difficulty change; the match takes it as `opts.aiPicksLast`: humans draft before AI seats, off by default, no extra random draw) · `room.addBot` / `room.removeBot {seat}` (host) · `room.kick {seat, playerId}` (host, before the match: another human leaves the room and gets `room.closed {reason:'kicked'}`; may join again; `playerId` = the player the host confirmed, a seat that changed hands meanwhile → `BAD_TARGET`) · `room.start` (host) · `room.loadout {entries, ops?}` (§16: any time in the lobby / room and during INFO_CHECK, then `WRONG_PHASE`; heavy rate-limit bucket; the match exposes it as `m.private.loadout`; `ops` — 0.2.2 — the per-operator 潜能 / 练度 `{ [charId]: { potential?: 1–6, cultivate?: 0–3 } }` of the 干员调配 roster and the 自选 owned pool, ≤ 256, checked strictly with the entries, `m.private.ops`; absent = none set: every operator 潜能 6, 精英2 Lv.60) · `room.ownership {notOwned}` (0.2.0 补位, the 干员持有 tab: the base chess ids marked as not owned — ≤ 160 ids, kept leniently: anything but a droppable NORMAL chess is dropped; stored on the session and the seat, a match takes the seat's list when it starts and never changes it — during a match `ROOM_STARTED` 'stored for the next match'; heavy bucket; the match exposes it as `m.private.standIns`) · `room.diy {picks}` (0.2.0 自选编队: `{ [slotBaseId]: { charId, skillIndex?, uniEquipId? } | null }` for the four DIY slots — ≤ 8 entries, kept leniently: shared/protocol.js `checkDiyPicks` drops an illegal pick (an operator without a kit, another tier's prototype, a prototype off its locked skill, a module of another game mode (集成战略 / 生息演算), an owned operator's second slot, the same operator twice in a tier, an unknown slot), only malformed picks are `BAD_MSG`; stored on the session and the seat like the not-owned list, a match takes the seat's picks when it starts — during a match `ROOM_STARTED` 'stored for the next match'; heavy bucket; the match exposes them as `m.private.diy`) · `ping {c}`
+-S→C: `welcome {playerId, token, name, serverNow}` · `room.state {code, hostId, mode, difficulty, aiPicksLast, seats:[{seat, playerId, name, isBot, ready, connected}|null ×4]}` · `room.closed {reason}` · `pong {c, s}` · `error {rid?, code, msg}` · `ok {rid}`
++C→S: `hello {name, token?, version}` · `room.create {mode:'solo'|'coop', difficulty}` · `room.join {code}` · `room.leave` · `room.ready {ready}` · `room.setDifficulty {difficulty}` (host) · `room.setPlugins {plugins:[{id, settings?}]}` (host, before the match — the room's cosmetic and gameplay plugins, §8.4; un-readies the other humans like a difficulty change) · `room.setMode {modeId}` (host, before the match: an official mode of the room's type sets the difficulty, a mode the room's content set adds becomes its mode, §8.4) · `room.contentReady {cs, ok?}` (a member's page loaded and checked the room's content set — or not, `ok: false`; §8.4) · `room.setAiPicksLast {on}` (host, co-op, before the match — `ROOM_STARTED` during it, `BAD_TARGET` in a solo room; un-readies the other humans like a difficulty change; the match takes it as `opts.aiPicksLast`: humans draft before AI seats, off by default, no extra random draw) · `room.addBot` / `room.removeBot {seat}` (host) · `room.kick {seat, playerId}` (host, before the match: another human leaves the room and gets `room.closed {reason:'kicked'}`; may join again; `playerId` = the player the host confirmed, a seat that changed hands meanwhile → `BAD_TARGET`) · `room.start` (host) · `room.loadout {entries, ops?}` (§16: any time in the lobby / room and during INFO_CHECK, then `WRONG_PHASE`; heavy rate-limit bucket; the match exposes it as `m.private.loadout`; `ops` — 0.2.2 — the per-operator 潜能 / 练度 `{ [charId]: { potential?: 1–6, cultivate?: 0–3 } }` of the 干员调配 roster and the 自选 owned pool, ≤ 256, checked strictly with the entries, `m.private.ops`; absent = none set: every operator 潜能 6, 精英2 Lv.60) · `room.ownership {notOwned}` (0.2.0 补位, the 干员持有 tab: the base chess ids marked as not owned — ≤ 160 ids, kept leniently: anything but a droppable NORMAL chess is dropped; stored on the session and the seat, a match takes the seat's list when it starts and never changes it — during a match `ROOM_STARTED` 'stored for the next match'; heavy bucket; the match exposes it as `m.private.standIns`) · `room.diy {picks}` (0.2.0 自选编队: `{ [slotBaseId]: { charId, skillIndex?, uniEquipId? } | null }` for the four DIY slots — ≤ 8 entries, kept leniently: shared/protocol.js `checkDiyPicks` drops an illegal pick (an operator without a kit, another tier's prototype, a prototype off its locked skill, a module of another game mode (集成战略 / 生息演算), an owned operator's second slot, the same operator twice in a tier, an unknown slot), only malformed picks are `BAD_MSG`; stored on the session and the seat like the not-owned list, a match takes the seat's picks when it starts — during a match `ROOM_STARTED` 'stored for the next match'; heavy bucket; the match exposes them as `m.private.diy`) · `room.invite {playerId}` (the Reality HUD overlay's in-game invite: forward the sender's room code to another online session as the push `room.invited`; the sender must hold a player seat of its own room — `NOT_IN_ROOM` / `SPECTATOR` — and the target another connected session, else `BAD_TARGET` 'no such player online' / 'already in this room'; heavy bucket, 2/s burst 6) · `m.hudDmg {dmg}` (HUD-only, no `rid`: the Reality HUD damage patch 1.8.0 live-damage relay — the player's own live damage of a client-run field in COMBAT / 联防; rate-limited per player, cleared by the round's settle stamp; a vanilla client never sends it, an unpatched server's whitelist rejects it) · `ping {c}`
++S→C: `welcome {playerId, token, name, serverNow}` · `room.state {code, hostId, mode, difficulty, aiPicksLast, seats:[{seat, playerId, name, isBot, ready, connected}|null ×4]}` · `room.closed {reason}` · `room.invited {from, name, code}` (the forwarded `room.invite` above — vanilla clients ignore the unknown push, the Reality HUD banner joins with `room.join`) · `pong {c, s}` · `error {rid?, code, msg}` · `ok {rid}`
+ 
+ Platform additions (implemented): `welcome.{resumed, version}`, `welcome.diyKitted` (0.2.0: the operators a 自选 slot may field — server/sim/content/kits/index.js `KITTED_CHARS`, the picker's list), `welcome.content` and `room.state.content` (0.3.0: the content identity, §8.4), `room.state.inMatch`, `error.detail`; `room.closed.reason ∈ 'timeout'|'kicked'|'empty'|'shutdown'` (`kicked`: room.kick / room.removeSpectator; `empty`: a spectator whose room lost its last player); WebSocket close codes 4001 (session taken over by another socket — client must not auto-reconnect), 4002 (no hello in time), 1008 (flooding), 1001 (shutdown). The host's `room.start` counts as the host being ready. After any (re)`hello` the server pushes `room.state` and, if a match runs, the match resends `m.public`/`m.private` (+`m.field`, or the field's `b.start` under client-side combat). **Reconnect window:** a dropped session stays resumable for 10 min (`net.js NET_DEFAULTS.reconnectWindowMs`; co-op seats keep playing their last lineup meanwhile, §6.6); a session that drops while its **solo** room's match runs stays resumable for the official `config.constants.singleReconnectTime` (86 400 s = 24 h; lobby option `soloReconnectWindowMs`; research 01 §1 "24小时内随时返回") — the untimed solo run simply waits. Only when the window expires does the drop become `match.onLeave` (co-op: 中途退出 = elimination; solo: the run ends `'abandoned'`). The client keeps its token in sessionStorage plus a recent-token list in localStorage, so reopening the tab resumes. Everything lives in server memory: a server restart ends every room and run. The lobby⇄match interface (constructor opts, `start/handle/onDisconnect/onReconnect/onLeave/dispose`) is documented verbatim at the top of `server/match/Match.js` and is normative. `server/data.js` provides `getData()` + index getters (`getChess`, `getBond`, `getGarrison`, `getItem`, `getBand`, `getEffect`, `getEnemy`, `getWave`, `getStage`, `getBoss`, `getToken`, `getConfig`, `getMode`). Note: the skill trigger rule lives at `chess.skill.trigger.rule` in data.
+ 
+@@ -24,7 +24,7 @@ selection/stamp rules live in design/client.md. In-flight protection requires th
  ### 8.2 Match
--C→S (all carry `rid`): `g.infoReady {setupRevision?}` · `g.band {bandId}` · `g.bandSkip` · `g.bandFocus {bandId?}` (the strategy highlighted in the draft screen — what a timed-out turn takes; absent / null clears it; `WRONG_PHASE` outside BAND_DRAFT, `ALREADY` after the pick, `BAD_TARGET` for a band not allowed; §18.2) · `g.buy {slot}` · `g.refresh` · `g.freeze` · `g.levelUp` · `g.sell {uid}` · `g.move {uid, to:{area:'board', row, col}|{area:'hand', idx}, dir?}` · `g.equip {itemUid, targetUid, replaceUid?}` (`replaceUid`: which equipped item a third one replaces, §6.2) · `g.art {itemUid, row, col, dir?}` (`dir` ∈ UP|RIGHT|DOWN|LEFT from the deploy wheel, §3; absent ⇒ `to.dir`, then RIGHT; `g.move` onto the piece's own tile re-orients it; board pieces in `m.private` / `m.field {prep:true}` carry `dir`) · `g.destroy {uid}` (hand / temp items only; equipped items are locked, §6.2) · `g.reward {idx}` · `g.choice {idx, choiceId?}` (with an ID: the recipient's PREP personal choice; without one: the public SP_DRAFT; stale or wrong IDs never fall through to the public draft) · `g.ready {ready}` · `g.emote {id}` · `g.watch {fieldId, playerId?}` (`playerId`: the player tapped — a shared 联防 / boss pair field shows two; what an eliminated viewer follows, §25) · `g.autoplay {on}` · `g.pause {on}` (solo battles only, §14 Solo pause) · `g.unitStats {seq?}` (ROUND_START / SP_DRAFT / PREP, else `WRONG_PHASE`; eliminated: `ELIMINATED`) → push `m.unitStats` (§18.5) · `g.leave`
-+C→S (all carry `rid`): `g.infoReady {setupRevision?}` · `g.band {bandId}` · `g.bandSkip` · `g.bandFocus {bandId?}` (the strategy highlighted in the draft screen — what a timed-out turn takes; absent / null clears it; `WRONG_PHASE` outside BAND_DRAFT, `ALREADY` after the pick, `BAD_TARGET` for a band not allowed; §18.2) · `g.buy {slot}` · `g.refresh` · `g.freeze` · `g.levelUp` · `g.sell {uid}` · `g.move {uid, to:{area:'board', row, col}|{area:'hand', idx}, dir?}` · `g.equip {itemUid, targetUid, replaceUid?}` (`replaceUid`: which equipped item a third one replaces, §6.2) · `g.art {itemUid, row, col, dir?}` (`dir` ∈ UP|RIGHT|DOWN|LEFT from the deploy wheel, §3; absent ⇒ `to.dir`, then RIGHT; `g.move` onto the piece's own tile re-orients it; board pieces in `m.private` / `m.field {prep:true}` carry `dir`) · `g.destroy {uid}` (hand / temp items only; equipped items are locked, §6.2) · `g.reward {idx}` · `g.choice {idx, choiceId?}` (with an ID: the recipient's PREP personal choice; without one: the public SP_DRAFT; stale or wrong IDs never fall through to the public draft) · `g.ready {ready}` · `g.emote {id}` · `g.watch {fieldId, playerId?}` (`playerId`: the player tapped — a shared 联防 / boss pair field shows two; what an eliminated viewer follows, §25) · `g.autoplay {on}` · `g.pause {on}` (solo battles only, §14 Solo pause) · `g.unitStats {seq?}` (ROUND_START / SP_DRAFT / PREP, else `WRONG_PHASE`; eliminated: `ELIMINATED`) → push `m.unitStats` (§18.5) · `g.leave` · `m.hudDmg {dmg}` (HUD-only, no `rid`: the Reality HUD damage patch 1.8.0 live-damage relay — the player's own live damage of a client-run field in COMBAT / 联防; rate-limited per player, cleared by the round's settle stamp; a vanilla client never sends it, an unpatched server's whitelist rejects it)
+ C→S (all carry `rid`): `g.infoReady {setupRevision?}` · `g.band {bandId}` · `g.bandSkip` · `g.bandFocus {bandId?}` (the strategy highlighted in the draft screen — what a timed-out turn takes; absent / null clears it; `WRONG_PHASE` outside BAND_DRAFT, `ALREADY` after the pick, `BAD_TARGET` for a band not allowed; §18.2) · `g.buy {slot}` · `g.refresh` · `g.freeze` · `g.levelUp` · `g.sell {uid}` · `g.move {uid, to:{area:'board', row, col}|{area:'hand', idx}, dir?}` · `g.equip {itemUid, targetUid, replaceUid?}` (`replaceUid`: which equipped item a third one replaces, §6.2) · `g.art {itemUid, row, col, dir?}` (`dir` ∈ UP|RIGHT|DOWN|LEFT from the deploy wheel, §3; absent ⇒ `to.dir`, then RIGHT; `g.move` onto the piece's own tile re-orients it; board pieces in `m.private` / `m.field {prep:true}` carry `dir`) · `g.destroy {uid}` (hand / temp items only; equipped items are locked, §6.2) · `g.reward {idx}` · `g.choice {idx, choiceId?}` (with an ID: the recipient's PREP personal choice; without one: the public SP_DRAFT; stale or wrong IDs never fall through to the public draft) · `g.ready {ready}` · `g.emote {id}` · `g.watch {fieldId, playerId?}` (`playerId`: the player tapped — a shared 联防 / boss pair field shows two; what an eliminated viewer follows, §25) · `g.autoplay {on}` · `g.pause {on}` (solo battles only, §14 Solo pause) · `g.unitStats {seq?}` (ROUND_START / SP_DRAFT / PREP, else `WRONG_PHASE`; eliminated: `ELIMINATED`) → push `m.unitStats` (§18.5) · `g.leave`
  S→C:
 -- `m.public` — full public state on every change (throttled ≤ 10/s): `{ phase, round, lastRound, deadline, serverNow, modeId, difficulty, stageId, factions, disabledBonds, bannedChess, bossId, hiddenBossId?, teamLp?, bossHp?:{hp,max}, overtimeAt? /* FA / HC: ms epoch the overtime drain starts, §4 */, paused /* solo pause, §14 */, draft?:{order,turn,picks,skipsLeft,turnDeadline,turnSeconds /* one turn's length, 0 untimed; deadline = turnDeadline (§18.2) */,untimed}, sp?:{family,cards /* bounty cards carry descRaw?, §20.6 */,turn,picks}, players:[{playerId, seat, name, isBot, connected, alive, lp, bandId, shopLevel, boardCount, ready, bonds:[{bondId,count,active,tier,layers,harmony? /* 调和's +1 is in count, §21.26 */}], fieldId, status, pendingLp? /* COMBAT / 联防 of a normal round: the LP the player's own battle will cost at settlement so far, min(lpCapPerRound, counted leaks) — in 联防 min(lpCapPerRound, uniteLeft) — omitted when 0 and in every other phase (§17.5 live LP) */, uniteLeft? /* 联防: the leaker's enemies still standing — not spawned yet + alive + counted leaks, uncapped, live (§20.6) */}] , fields:[{fieldId, kind, players:[playerId...], progress?:{killed, resolved, total, done} /* §14 顶栏胶囊: resolved = the field's own scheduled enemies knocked down or leaked, null while unknown */}] }` · `m.public.uniteResult` — SETTLE after a 联防 only, its outcome as data: `{ through /* the leakers' enemies that still got through, uncapped */, helpers:[playerId...], leakers:[playerId...], losses:{playerId: the LP settlement charged this round — every alive player} }`; absent when no 联防 resolved (the client's result box then reads the round's own battle; GitHub #235, PR #112)
-+- `m.public` — full public state on every change (throttled ≤ 10/s): `{ phase, round, lastRound, deadline, serverNow, modeId, difficulty, stageId, factions, disabledBonds, bannedChess, bossId, hiddenBossId?, teamLp?, bossHp?:{hp,max}, overtimeAt? /* FA / HC: ms epoch the overtime drain starts, §4 */, paused /* solo pause, §14 */, hudRelay /* Reality HUD damage patch 1.8.0: true — the server accepts the HUD's m.hudDmg live-damage relay */, draft?:{order,turn,picks,skipsLeft,turnDeadline,turnSeconds /* one turn's length, 0 untimed; deadline = turnDeadline (§18.2) */,untimed}, sp?:{family,cards /* bounty cards carry descRaw?, §20.6 */,turn,picks}, players:[{playerId, seat, name, isBot, connected, alive, lp, bandId, shopLevel, boardCount, ready, bonds:[{bondId,count,active,tier,layers,harmony? /* 调和's +1 is in count, §21.26 */}], fieldId, status, pendingLp? /* COMBAT / 联防 of a normal round: the LP the player's own battle will cost at settlement so far, min(lpCapPerRound, counted leaks) — in 联防 min(lpCapPerRound, uniteLeft) — omitted when 0 and in every other phase (§17.5 live LP) */, uniteLeft? /* 联防: the leaker's enemies still standing — not spawned yet + alive + counted leaks, uncapped, live (§20.6) */, hudDmg?:{round, dmg, total, settled} /* Reality HUD damage patch (`server-patch/reality-hud-damage.patch`): `dmg` = this player's damage of round `round` (a settled round's credit plus a live share — a live boss field's own share, or the player's own live damage relayed by its HUD, C2S `m.hudDmg` 1.8.0 — a client-run field's damage is invisible to the server otherwise), `total` = the match's cumulative, `settled` = `dmg` is the round's complete credited damage, so the HUD replaces its local live estimate with it in either direction (every screen ends the round on one number) — an extra field vanilla clients ignore */}] , fields:[{fieldId, kind, players:[playerId...], progress?:{killed, resolved, total, done} /* §14 顶栏胶囊: resolved = the field's own scheduled enemies knocked down or leaked, null while unknown */}] }` · `m.public.uniteResult` — SETTLE after a 联防 only, its outcome as data: `{ through /* the leakers' enemies that still got through, uncapped */, helpers:[playerId...], leakers:[playerId...], losses:{playerId: the LP settlement charged this round — every alive player} }`; absent when no 联防 resolved (the client's result box then reads the round's own battle; GitHub #235, PR #112). **Reality HUD damage patch** (an optional server-side extension, `server-patch/reality-hud-damage.patch` in the Reality HUD repo): every player row carries `hudDmg { round, dmg, total }`, stamped with the round the damage belongs to — a normal round stamps the damage its settlement credits (`MatchSettle.settle`), a boss round refreshes it at the ~1 Hz m.public cadence from the live `f.bossBy` share of a still-running boss field (`MatchViews._hudDmgView`; the final result moves that share into `stats.dmgDealt`, which `total` already counted without double-counting the live part) — so a frame still in flight when the round advances never lands in the next round's damage, and teammates' damage is visible without waiting for `m.result`.
++- `m.public` — full public state on every change (throttled ≤ 10/s): `{ phase, round, lastRound, deadline, serverNow, modeId, difficulty, stageId, factions, disabledBonds, bannedChess, bossId, hiddenBossId?, teamLp?, bossHp?:{hp,max}, overtimeAt? /* FA / HC: ms epoch the overtime drain starts, §4 */, paused /* solo pause, §14 */, hudRelay /* Reality HUD damage patch 1.8.0: true — the server accepts the HUD's m.hudDmg live-damage relay */, draft?:{order,turn,picks,skipsLeft,turnDeadline,turnSeconds /* one turn's length, 0 untimed; deadline = turnDeadline (§18.2) */,untimed}, sp?:{family,cards /* bounty cards carry descRaw?, §20.6 */,turn,picks}, players:[{playerId, seat, name, isBot, connected, alive, lp, bandId, shopLevel, boardCount, ready, bonds:[{bondId,count,active,tier,layers,harmony? /* 调和's +1 is in count, §21.26 */}], fieldId, status, pendingLp? /* COMBAT / 联防 of a normal round: the LP the player's own battle will cost at settlement so far, min(lpCapPerRound, counted leaks) — in 联防 min(lpCapPerRound, uniteLeft) — omitted when 0 and in every other phase (§17.5 live LP) */, uniteLeft? /* 联防: the leaker's enemies still standing — not spawned yet + alive + counted leaks, uncapped, live (§20.6) */, hudDmg?:{round, dmg, total, settled} /* Reality HUD damage patch (`server-patch/reality-hud-damage.patch`): `dmg` = this player's damage of round `round` (a settled round's credit plus a live share — a live boss field's own share, or the player's own live damage relayed by its HUD, C2S `m.hudDmg` 1.8.0 — a client-run field's damage is invisible to the server otherwise), `total` = the match's cumulative, `settled` = `dmg` is the round's complete credited damage, so the HUD replaces its local live estimate with it in either direction (every screen ends the round on one number) — an extra field vanilla clients ignore */}] , fields:[{fieldId, kind, players:[playerId...], progress?:{killed, resolved, total, done} /* §14 顶栏胶囊: resolved = the field's own scheduled enemies knocked down or leaked, null while unknown */}] }` · `m.public.uniteResult` — SETTLE after a 联防 only, its outcome as data: `{ through /* the leakers' enemies that still got through, uncapped */, helpers:[playerId...], leakers:[playerId...], losses:{playerId: the LP settlement charged this round — every alive player} }`; absent when no 联防 resolved (the client's result box then reads the round's own battle; GitHub #235, PR #112)
  - `m.private` — the recipient's full PlayerState view (§6.2 minus server-only data) on every change; in a boss round's prep also `bossMate { playerId, side, units }` — the pair partner's board on its half of the boss field (UnitInfo, mirrored on the right half), re-sent when the partner moves (0.2.0, community report item 51).
  - `m.field` — field meta when watching starts: `{ fieldId, kind, rect, stageId, units: [UnitInfo], effects? }` (the units on the field, knocked-out operators waiting to redeploy included — `Battle.fieldMeta`, §18.3). The prep-scouting field (`Match.prepFieldMeta`) puts the scouted player's **hand (整备区) and 临时整备区 into `units` as well**: held pieces as units on the hand row (row 7, col = hand slot) and temp pieces on the temp row (row 8, cols 4..8 = the temp slots; PRTS 帮助 counts the temp area with the hand; a held item is a `kind: 'item'` unit the client draws as its floating plate) — the scout renders exactly like the own prep bench, for every watcher alike, the spectator seat's copy equal to a teammate's (§23.19's "never a private view" stays the no-`m.private` rule); the scout signature `_prepScoutSig` carries the hand / temp slots, so a piece moved to another slot is a change — and carries `effects`: the scouted player's effects view (策略 / 机变 / 悬赏 …), the watched player's effects column ready-made
  - NOTE: game time in `b.snap`/`b.ev` is carried as **`gt`** (the frame's `t` is the message type).
@@ -45,31 +55,125 @@ index 47b1412f..9c9d66fb 100644
    listed enemy's recovery was cut or ignored (失衡, fear, stun, hiding, leaving): an interval with a cut inside it stays
    linear. A newest snapshot showing a death, a stun or a block is not extrapolated. Old snapshots without them
    interpolate linearly; nothing is inferred from the attack animation.
--- `b.ev` — `{ fieldId, ev: [ ... ] }` event tuples: `['spawn', UnitInfo]`, `['atk', srcId, tgtId, projKind]`, `['dmg', tgtId, amount, type]`, `['heal', tgtId, amount]`, `['skill', id, on:0|1]`, `['die', id, reason]` (reason `'killed'`, `'retreat'`, `'expired'` …; only `'killed'` plays an operator's knock-down sound), `['status', id, key, on]`, `['fx', kind, x, y, extra]` (`'hitCap' {id, n}` = a cancelled 限伤 hit, drawn as nothing, §20.12; `extra.form` = the unit's model form from then on (an enemy's mode, a 傀儡师's 替身 §22.11) — `shared/protocol.js fxForm`, state like a spawn: never dropped by the client, §21.4), `['layer', playerId, bondId, n]`, `['bounty', playerId, coins]`, `['deploy', id]`
-+- `b.ev` — `{ fieldId, ev: [ ... ] }` event tuples: `['spawn', UnitInfo]`, `['atk', srcId, tgtId, projKind]`, `['dmg', tgtId, amount, type]` (index 4 `'r'` = the official red number, docs/design/client.md; a hit credited to a unit appends that unit's id at index 5 — mark slot `null` at 4 when the hit is not red — so damage accounting by operator / by player pins every hit to its attacker instead of guessing by `atk` order; a sourceless hit keeps the four-element shape — the Reality HUD damage patch), `['heal', tgtId, amount]`, `['skill', id, on:0|1]`, `['die', id, reason]` (reason `'killed'`, `'retreat'`, `'expired'` …; only `'killed'` plays an operator's knock-down sound), `['status', id, key, on]`, `['fx', kind, x, y, extra]` (`'hitCap' {id, n}` = a cancelled 限伤 hit, drawn as nothing, §20.12; `extra.form` = the unit's model form from then on (an enemy's mode, a 傀儡师's 替身 §22.11) — `shared/protocol.js fxForm`, state like a spawn: never dropped by the client, §21.4), `['layer', playerId, bondId, n]`, `['bounty', playerId, coins]`, `['deploy', id]`
+-- `b.ev` — `{ fieldId, ev: [ ... ] }` event tuples: `['spawn', UnitInfo]`, `['atk', srcId, tgtId, projKind]`, `['dmg', tgtId, amount, type]`, `['heal', tgtId, amount]`, `['skill', id, on:0|1]`, `['die', id, reason]` (reason `'killed'`, `'retreat'`, `'expired'` …; only `'killed'` plays an operator's knock-down sound), `['status', id, key, on]`, `['fx', kind, x, y, extra]` (`'hitCap' {id, n}` = a cancelled 限伤 hit, drawn as nothing, §20.12; `extra.form` = the unit's model form from then on (an enemy's mode, a 傀儡师's 替身 §22.11) — `shared/protocol.js fxForm`, state like a spawn: never dropped by the client, §21.4), `['layer', playerId, bondId, n]`, `['bounty', playerId, coins]`, `['deploy', id]`, `['cast', id, slot, dur?]` (display only: an enemy's skill by the slot of its data record's `skills[]`, `dur` its blackboard duration — SIM.md; a cosmetic event the client may drop when stale, `render/interp.js COSMETIC_EVENTS`)
++- `b.ev` — `{ fieldId, ev: [ ... ] }` event tuples: `['spawn', UnitInfo]`, `['atk', srcId, tgtId, projKind]`, `['dmg', tgtId, amount, type]` (index 4 `'r'` = the official red number, docs/design/client.md; a hit credited to a unit appends that unit's id at index 5 — mark slot `null` at 4 when the hit is not red — so damage accounting by operator / by player pins every hit to its attacker instead of guessing by `atk` order; a sourceless hit keeps the four-element shape — the Reality HUD damage patch), `['heal', tgtId, amount]`, `['skill', id, on:0|1]`, `['die', id, reason]` (reason `'killed'`, `'retreat'`, `'expired'` …; only `'killed'` plays an operator's knock-down sound), `['status', id, key, on]`, `['fx', kind, x, y, extra]` (`'hitCap' {id, n}` = a cancelled 限伤 hit, drawn as nothing, §20.12; `extra.form` = the unit's model form from then on (an enemy's mode, a 傀儡师's 替身 §22.11) — `shared/protocol.js fxForm`, state like a spawn: never dropped by the client, §21.4), `['layer', playerId, bondId, n]`, `['bounty', playerId, coins]`, `['deploy', id]`, `['cast', id, slot, dur?]` (display only: an enemy's skill by the slot of its data record's `skills[]`, `dur` its blackboard duration — SIM.md; a cosmetic event the client may drop when stale, `render/interp.js COSMETIC_EVENTS`)
  - `m.toast {kind, text}` · `m.ticker {text, id, type, priority, playerId}` (the strip plays the highest priority first, §21.10) · `m.emote {playerId, id}` · `m.result {...}`
  - `m.layer {playerId, bondId, add}` — a positive prep layer gain, sent only to that player in ROUND_START / SP_DRAFT /
    PREP for audio feedback. No replay on reconnect/resync and no settlement backfill; battle audio uses `layer` tuples
+diff --git a/docs/design/overview.md b/docs/design/overview.md
+index 8b35cead..7b04a785 100644
+--- a/docs/design/overview.md
++++ b/docs/design/overview.md
+@@ -50,7 +50,8 @@ server/
+     files.js               one file → response: MIME, brotli q5 / gzip (.skel/.atlas/.json/.js/.css …), ETag (content hash when known) / 304,
+                            cache policy, ranges; serveBuffer for the served manifests
+     buildTag.js            build tag of the served browser runtime (/healthz build, public/js/ui/buildGuard.js)
+-    routes.js              request listener: 414 / 400 / 405 guards, GET /healthz (?traffic=1: the counters), then static files
++    routes.js              request listener: 414 / 400 / 405 guards, GET /healthz (?traffic=1: the counters),
++                           GET /api/players, then static files
+     traffic.js             traffic counters: HTTP body bytes by category (assets / audio / code / data), WebSocket wire / payload
+     assetIndex.js          content hashes (SHA-256, 16 hex) of public/assets + public/fonts, background build, .cache/asset-hashes.json
+     assetViews.js          the served /data/assets.json + /data/local-assets.json: art URLs as /assets/~<hash>/… (immutable when it matches)
+diff --git a/server/http/routes.js b/server/http/routes.js
+index e385f9bc..dc0081e5 100644
+--- a/server/http/routes.js
++++ b/server/http/routes.js
+@@ -13,6 +13,8 @@
+ //     start, WebSocket wire and payload bytes) for a loopback or private-network client only — the maintainer's
+ //     decision of 2026-10-12: the figures are the host's, so any other client, also one a tunnel or proxy on this
+ //     machine forwards, gets the plain report (net.js clientAddress, honouring TRUST_PROXY like the WebSocket limits);
++//   * GET /api/players → the connected sessions (Reality HUD overlay: name + where they are; no room codes, no
++//     tokens), never cached;
+ //   * everything else → the static files (static.js).
+ // Every response's body bytes count in the traffic counters (traffic.js meter). A route that throws is logged and
+ // answers 500.
+@@ -68,6 +70,23 @@ export function healthReport({ startedAt, network, registry, lobby, content = nu
+ /** Does the query ask for the traffic counters (`traffic`, `traffic=1`, `traffic=true`)? */
+ const wantsTraffic = (query) => /(?:^|&)traffic(?:=(?:1|true|yes))?(?:&|$)/i.test(query || '');
+ 
++/**
++ * The GET /api/players body (Reality HUD overlay): the sessions connected right now — who may be invited from the
++ * HUD (server/lobby.js invite). Names and playerIds are already visible in a room to its members; the room codes
++ * never leave this function (they are the join secret — only the invited session ever receives one, via
++ * S2C room.invited), and neither do tokens nor addresses.
++ * @param {{ registry: import('../net.js').SessionRegistry, lobby: import('../lobby.js').Lobby }} deps
++ */
++export function playersReport({ registry, lobby }) {
++  const players = [];
++  for (const s of registry.byPlayerId.values()) {
++    if (!s.connected) continue;
++    const room = s.roomCode ? lobby.getRoom(s.roomCode) : null;
++    players.push({ id: s.playerId, name: s.name, inRoom: !!room, inMatch: !!(room && room.match) });
++  }
++  return { ok: true, players };
++}
++
+ /**
+  * The request listener for `http.createServer`.
+  * @param {{ serveStatic: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse,
+@@ -97,6 +116,10 @@ export function createRequestHandler({ serveStatic, health, log, trustProxy = 'a
+       sendJson(req, res, 200, healthReport(health, withTraffic));
+       return;
+     }
++    if (parts.rawPath === '/api/players') {
++      sendJson(req, res, 200, playersReport({ registry: health.registry, lobby: health.lobby }));
++      return;
++    }
+     await serveStatic(req, res, parts.rawPath, parts.query);
+   }
+ 
 diff --git a/server/lobby.js b/server/lobby.js
-index de1640a4..7413fa54 100644
+index bb8f0845..79f7cb90 100644
 --- a/server/lobby.js
 +++ b/server/lobby.js
-@@ -352,7 +352,9 @@ export class Lobby {
+@@ -592,12 +592,15 @@ export class Lobby {
+       case 'room.diy': return this.diy(session, msg);
+       case 'room.spectate': return this.spectate(session, msg);
        case 'room.removeSpectator': return this.removeSpectator(session, msg);
-       case 'room.invite': return this.invite(session, msg);
++      case 'room.invite': return this.invite(session, msg);
+       case 'room.setPlugins': return this.setPlugins(session, msg);
+       case 'room.setMode': return this.setMode(session, msg);
+       case 'room.contentReady': return this.contentReady(session, msg, ctx);
+-      case 'room.consent': return this.consent(session,msg);
++      case 'room.consent': return this.consent(session, msg);
        default:
--        if (typeof msg.t === 'string' && msg.t.startsWith('g.')) return this.routeGame(session, msg);
+-        if (typeof msg.t === 'string' && msg.t.startsWith('g.')) return this.routeGameNow(session, msg);
 +        // Reality HUD damage patch (1.8.0): the HUD's live-damage relay goes to the running match like a g.* intent
 +        // (net.js routes only the b.* battle reports there directly)
-+        if (typeof msg.t === 'string' && (msg.t.startsWith('g.') || msg.t === 'm.hudDmg')) return this.routeGame(session, msg);
++        if (typeof msg.t === 'string' && (msg.t.startsWith('g.') || msg.t === 'm.hudDmg')) return this.routeGameNow(session, msg);
          return fail(ERR.BAD_MSG, `unhandled type ${String(msg.t).slice(0, 32)}`);
      }
    }
+@@ -775,6 +778,24 @@ export class Lobby {
+     return OK;
+   }
+ 
++  /**
++   * room.invite (Reality HUD overlay feature): the sender — in a room, lobby or running match — asks the server to
++   * forward its invitation to another online session: S2C room.invited { from, name, code }. The room code only ever
++   * reaches the invited session, never a list endpoint. Rate-limited by the per-connection heavy bucket (invite spam
++   * guard, server/net.js HEAVY_TYPES). Self / unknown / offline / already-here targets are BAD_TARGET; a sender with
++   * no room of its own is NOT_IN_ROOM. Vanilla clients ignore the push (no listener); the modded HUD shows a banner.
++   */
++  invite(session, { playerId }) {
++    const room = this.roomOf(session);
++    if (!room) return fail(ERR.NOT_IN_ROOM);
++    if (room.spectatorOf(session.playerId)) return fail(ERR.SPECTATOR, 'spectators cannot invite');
++    const target = this.registry.byId(playerId);
++    if (!target || !target.connected || target.playerId === session.playerId) return fail(ERR.BAD_TARGET, 'no such player online');
++    if (target.roomCode === room.code) return fail(ERR.BAD_TARGET, 'already in this room');
++    sendSession(target, { t: 'room.invited', from: session.playerId, name: session.name, code: room.code });
++    return OK;
++  }
++
+   ready(session, { ready }) {
+     const room = this.roomOf(session);
+     if (!room) return fail(ERR.NOT_IN_ROOM);
 diff --git a/server/match/PlayerState.js b/server/match/PlayerState.js
-index 1445a497..2fd1cb3f 100644
+index bb85eb43..3329d836 100644
 --- a/server/match/PlayerState.js
 +++ b/server/match/PlayerState.js
-@@ -229,6 +229,21 @@ export class PlayerState {
+@@ -230,6 +230,21 @@ export class PlayerState {
        dmgDealt: 0, kills: 0, leaks: 0, gold: 0, refreshes: 0, merges: 0, itemMerges: 0, itemsEquipped: 0,
        bossDamage: 0, lpLost: 0, buys: 0, sells: 0, perfectRounds: 0, fundsGained: 0, healing: 0,
      };
@@ -89,23 +193,23 @@ index 1445a497..2fd1cb3f 100644
 +    this.hudLiveDmg = 0;
 +    this.hudLiveAt = 0;
      this.eliminatedRound = null;
+     this.creditedKills = 0;
      this.lpAtFinal = null;
-     /** last combat result for this player (unite carry state, bounties) */
 diff --git a/server/match/match/bossRounds.js b/server/match/match/bossRounds.js
-index bb5d12ee..b8b1d244 100644
+index 251285db..8b6da3e8 100644
 --- a/server/match/match/bossRounds.js
 +++ b/server/match/match/bossRounds.js
-@@ -524,6 +524,8 @@ export class MatchBoss {
+@@ -525,6 +525,8 @@ export class MatchBoss {
          if (pp && ps) {
            ps.stats.dmgDealt += Number(pp.damageDealt) || 0;
            ps.stats.kills += Number(pp.killed) || 0;
 +          // Reality HUD damage patch: the boss damage just moved from f.bossBy into stats — stamp it as this round's
 +          this._hudCreditDmg(ps, Number(pp.damageDealt) || 0);
+           ps.creditedKills += creditedKillsOf(pp);
            ps.dirty(); // m.private.stats
            this._charDamageTickers(ps, pp);
-         }
 diff --git a/server/match/match/intents.js b/server/match/match/intents.js
-index e8131a24..1de537b1 100644
+index 6c8c107d..4f1f6e87 100644
 --- a/server/match/match/intents.js
 +++ b/server/match/match/intents.js
 @@ -49,6 +49,7 @@ export class MatchIntents {
@@ -113,11 +217,11 @@ index e8131a24..1de537b1 100644
        case 'b.progress': return this._onProgress(ps, msg);
        case 'b.result': return this._onResult(ps, msg);
 +      case 'm.hudDmg': return this._onHudDmg(ps, msg);
-       default: return fail(ERR.BAD_MSG);
-     }
-   }
+       // the host's answer to a delegated bot layout rehearsal (DESIGN §14): a report, never an error — an unknown,
+       // expired or foreign task is ignored (MatchRehearsal._onRehearsalResult)
+       case 'b.rehearsalResult': this._onRehearsalResult(ps, msg); return OK;
 diff --git a/server/match/match/platform.js b/server/match/match/platform.js
-index f6107f76..765bcf57 100644
+index bd1206ef..56edba8d 100644
 --- a/server/match/match/platform.js
 +++ b/server/match/match/platform.js
 @@ -10,7 +10,9 @@ import { syntheticResult } from '../fields.js';
@@ -132,7 +236,7 @@ index f6107f76..765bcf57 100644
  export class MatchPlatform {
    start() {
 diff --git a/server/match/match/reports.js b/server/match/match/reports.js
-index 9905aaa7..8c429c9d 100644
+index a73e7212..125def54 100644
 --- a/server/match/match/reports.js
 +++ b/server/match/match/reports.js
 @@ -4,7 +4,7 @@
@@ -172,20 +276,20 @@ index 9905aaa7..8c429c9d 100644
    _onResult(ps, msg) {
      if (!this.clientCombat) return fail(ERR.WRONG_PHASE, 'server-run combat');
 diff --git a/server/match/match/settle.js b/server/match/match/settle.js
-index 0627f5d9..a57e8466 100644
+index ca74bffe..c4221c7f 100644
 --- a/server/match/match/settle.js
 +++ b/server/match/match/settle.js
-@@ -54,6 +54,8 @@ export class MatchSettle {
+@@ -55,6 +55,8 @@ export class MatchSettle {
          ps.stats.dmgDealt += Number(up.damageDealt) || 0;
          ps.stats.kills += Number(up.killed) || 0;
        }
 +      // Reality HUD damage patch: this round's credited damage, stamped with the round, for the teammates' 玩家 table
 +      this._hudCreditDmg(ps, (Number(r.damageDealt) || 0) + (up ? Number(up.damageDealt) || 0 : 0));
+       ps.creditedKills += creditedKillsOf(r) + creditedKillsOf(up);
        // perfect-payout bounties (战术特训): own phase perfect
        for (const b of ps.bounties) if (b.card.payout === 'perfect' && counted === 0 && r.perfect !== false) coins += b.card.coin;
-       if (coins > 0) { ps.pendingFunds += coins; ps.stats.fundsGained += coins; }
 diff --git a/server/match/match/views.js b/server/match/match/views.js
-index 6539f417..5d75f8d1 100644
+index 13ab6f66..3549fef6 100644
 --- a/server/match/match/views.js
 +++ b/server/match/match/views.js
 @@ -90,6 +90,9 @@ export class MatchViews {
@@ -253,6 +357,24 @@ index 6539f417..5d75f8d1 100644
    /** nextEnemies preview for m.private. */
    nextEnemiesFor(ps) {
      if (!ps.alive) return [];
+diff --git a/server/net.js b/server/net.js
+index 59f43ad1..97f73a96 100644
+--- a/server/net.js
++++ b/server/net.js
+@@ -68,10 +68,11 @@ export const NET_DEFAULTS = Object.freeze({
+  * room.loadout (a ≤ 160-entry map and ≤ 256 operator settings validated against the game data; the client debounces its
+  * edits), room.ownership
+  * (a ≤ 160-id list, the same way), room.diy (≤ 8 自选 picks checked against the data, the same way), room.spectate
+- * (taking a spectator seat in a running match resends its state like a watcher's g.watch — server/lobby.js spectate) and
++ * (taking a spectator seat in a running match resends its state like a watcher's g.watch — server/lobby.js spectate),
++ * room.invite (one small push to another session — an invite-spam guard, server/lobby.js invite) and
+  * room.setPlugins (a new visual set: every member downloads its art manifest — server/plugins/visualSet.js).
+  */
+-export const HEAVY_TYPES = new Set(['g.watch', 'room.loadout', 'room.ownership', 'room.diy', 'room.spectate', 'room.setPlugins']);
++export const HEAVY_TYPES = new Set(['g.watch', 'room.loadout', 'room.ownership', 'room.diy', 'room.spectate', 'room.invite', 'room.setPlugins']);
+ 
+ /** Close codes (see header). */
+ export const CLOSE = Object.freeze({ REPLACED: 4001, HELLO_TIMEOUT: 4002, POLICY: 1008, SHUTDOWN: 1001 });
 diff --git a/server/sim/damage.js b/server/sim/damage.js
 index a4b27420..65f04bb6 100644
 --- a/server/sim/damage.js
@@ -286,21 +408,42 @@ index a4b27420..65f04bb6 100644
    if (battle._hooks.damaged) battle.emit('damaged', { source, target, amount: amt, type: 'element', dmg });
    if (target.elem[el] >= max && target.alive) elementBurst(battle, source, target, el);
 diff --git a/shared/protocol.js b/shared/protocol.js
-index 128aee61..903fb467 100644
+index ce37d0f4..e832b478 100644
 --- a/shared/protocol.js
 +++ b/shared/protocol.js
-@@ -469,6 +469,11 @@ export const C2S = {
-     $optional: ['resolved', 'leaks', 'bossDmg', 'by', 'done', 'left', 'leaksBy'],
-   },
-   'b.result': { battleId: isId, result: isBattleResult },
-+
+@@ -442,6 +442,10 @@ export const C2S = {
+   // room.closed { reason: 'kicked' }). room.leave / g.leave leave a spectator seat like a player seat.
+   'room.spectate': { code: (v) => isStr(v, ROOM_CODE_LEN + 2) && /^[A-Za-z0-9]+$/.test(v) },
+   'room.removeSpectator': { playerId: isId },
++  // invite a player online to your own room (Reality HUD overlay): the server pushes S2C room.invited { from, name, code }
++  // to the target session (server/lobby.js invite; heavy bucket — invite spam guard). The room code only ever reaches
++  // the invited session, never a list endpoint.
++  'room.invite': { playerId: isId },
+   // the room's plugins (DESIGN §32, P1a; host, before the match — like a difficulty change it un-readies the others):
+   // the plugins of this server the room switches on, in any order (the server closes the set over their requirements
+   // and sorts it: shared/plugins/order.js); [] = the original content. Cosmetic plugins (art: the room's visual set,
+@@ -515,6 +519,10 @@ export const C2S = {
+   // with gameplay plugins (P1c, DESIGN §32.6) the match refuses a result without it or with another one (and runs the
+   // battle itself); a vanilla room's browser sends none
+   'b.result': { battleId: isId, result: isBattleResult, cs: isContentHash, $optional: ['cs'] },
 +  // the HUD's live-damage relay (Reality HUD damage patch 1.8.0): the player's own damage of the current round while
 +  // a client-run field is in combat — the server cannot see a client-simulated field's damage otherwise. Rate-limited
 +  // per player server-side (MatchReports._onHudDmg); a vanilla client never sends it.
 +  'm.hudDmg': { dmg: (v) => isNum(v, 0, 1e8) },
- };
- 
- // Server → client message types (documentation + client dispatch table keys).
+   // A delegated bot layout rehearsal (DESIGN §14): the match's current host answers the candidates it was handed with
+   // the S2C 'b.rehearsal' frame. `choice` is the index of the candidate its browser picked, in the order the task sent
+   // them — a malicious or buggy client can only name one of the server's own candidate layouts, never a layout or a
+@@ -532,6 +540,10 @@ export const C2S = {
+ export const S2C = [
+   'welcome', 'ok', 'error', 'pong',
+   'room.state', 'room.closed',
++  // room.invited { from, name, code } — another player asks you to join their room (Reality HUD overlay; forwarded by
++  // server/lobby.js invite). Vanilla clients have no listener and ignore it; the modded HUD shows a banner and joins
++  // with room.join.
++  'room.invited',
+   'm.public', 'm.private', 'm.field', 'm.toast', 'm.ticker', 'm.emote', 'm.result',
+   // m.layer { playerId, bondId, add } — own live prep layer gain; ephemeral, never replayed on resync.
+   'm.layer',
 diff --git a/test/lobby-hud-relay.test.js b/test/lobby-hud-relay.test.js
 new file mode 100644
 index 00000000..5ee1a61f
@@ -369,6 +512,210 @@ index 00000000..5ee1a61f
 +    assert.equal(reply.code, 'WRONG_PHASE', JSON.stringify(reply));
 +    assert.equal(reply.detail, 'no running match', JSON.stringify(reply));
 +    await c.close();
++  });
++});
+diff --git a/test/lobby-invite.test.js b/test/lobby-invite.test.js
+new file mode 100644
+index 00000000..634031c9
+--- /dev/null
++++ b/test/lobby-invite.test.js
+@@ -0,0 +1,198 @@
++// test/lobby-invite.test.js — room.invite / room.invited and GET /api/players (the Reality HUD
++// overlay's in-game invite: a player in a room asks the server to forward its room code to another
++// online session, S2C room.invited; the roster behind the HUD's invite list). The room code only
++// ever reaches the invited session — never the roster — and the push is rate-limited by the
++// per-connection heavy bucket (server/net.js HEAVY_TYPES).
++// Run: node --test test/lobby-invite.test.js
++import { describe, test, before, after, afterEach } from 'node:test';
++import assert from 'node:assert/strict';
++
++import { startServer } from '../server/index.js';
++import { StubMatch } from '../server/match/StubMatch.js';
++import { TestClient } from './helpers/wsClient.js';
++import { ERR } from '../shared/constants.js';
++import { C2S, S2C, validateC2S } from '../shared/protocol.js';
++
++function clientPool(getUrl) {
++  const open = new Set();
++  return {
++    async connect() { const c = await TestClient.connect(getUrl()); open.add(c); return c; },
++    async player(name, token) {
++      const c = await this.connect();
++      const w = await c.hello(name, token);
++      c.id = w.playerId;
++      c.token = w.token;
++      return c;
++    },
++    async closeAll() {
++      await Promise.all([...open].map((c) => c.terminate().catch(() => {})));
++      open.clear();
++    },
++  };
++}
++const quietLog = () => {
++  const errors = [];
++  return { errors, log: { info() {}, warn() {}, debug() {}, error: (...a) => errors.push(a.map(String).join(' ')) } };
++};
++const ok = async (c, msg) => { const r = await c.request(msg); assert.equal(r.t, 'ok', `${msg.t}: ${JSON.stringify(r)}`); return r; };
++const err = async (c, msg, code) => { const r = await c.request(msg); assert.equal(r.t, 'error', JSON.stringify(r)); assert.equal(r.code, code, JSON.stringify(r)); return r; };
++const seatOf = (state, id) => state.seats.find((s) => s && s.playerId === id) || null;
++const fetchPlayers = async (url) => {
++  const res = await fetch(`${url}/api/players`, { cache: 'no-store' });
++  assert.equal(res.status, 200);
++  return res.json();
++};
++async function createRoom(c) {
++  await ok(c, { t: 'room.create', mode: 'coop', difficulty: 'NORMAL' });
++  return c.waitFor('room.state', (s) => s.hostId === c.id);
++}
++
++describe('room.invite / room.invited (lobby)', () => {
++  let srv;
++  let pool;
++  const cap = quietLog();
++  before(async () => {
++    srv = await startServer({ port: 0, host: '127.0.0.1', log: cap.log, MatchClass: StubMatch, lobbyGraceMs: 60_000 });
++    pool = clientPool(() => `ws://127.0.0.1:${srv.port}/ws`);
++  });
++  afterEach(async () => { await pool.closeAll(); });
++  after(async () => {
++    await srv?.close();
++    assert.deepEqual(cap.errors, [], 'no server errors logged');
++  });
++
++  test('protocol: room.invite {playerId} is a C2S request, room.invited an S2C push', () => {
++    assert.ok(C2S['room.invite'], 'the C2S map knows room.invite');
++    assert.equal(validateC2S({ t: 'room.invite', playerId: 'p_0123456789' }), null);
++    assert.notEqual(validateC2S({ t: 'room.invite' }), null, 'the playerId is required');
++    assert.notEqual(validateC2S({ t: 'room.invite', playerId: 42 }), null, 'an id is a string');
++    assert.notEqual(validateC2S({ t: 'room.invite', playerId: '' }), null, 'never empty');
++    assert.ok(S2C.includes('room.invited'), 'the S2C list documents the push');
++  });
++
++  test('a room member invites an online player: room.invited {from, name, code}, which joins with the code', async () => {
++    const host = await pool.player('Host');
++    const st = await createRoom(host);
++    const guest = await pool.player('Guest');
++    await ok(host, { t: 'room.invite', playerId: guest.id });
++    const inv = await guest.waitFor('room.invited');
++    assert.equal(inv.from, host.id, 'named by the inviter');
++    assert.equal(inv.name, 'Host');
++    assert.equal(inv.code, st.code, 'the room code only reaches the invited session');
++    assert.equal(inv.rid, undefined, 'a push, not a reply');
++    // the invited side joins exactly like the ?room= deep link does
++    await ok(guest, { t: 'room.join', code: inv.code });
++    const state = await guest.waitFor('room.state', (s) => !!seatOf(s, guest.id));
++    assert.equal(state.code, st.code);
++    // and inviting somebody already here is refused
++    await err(host, { t: 'room.invite', playerId: guest.id }, ERR.BAD_TARGET);
++  });
++
++  test('refusals: outside a room, yourself, an unknown or offline target, a spectator', async () => {
++    const host = await pool.player('Host');
++    const st = await createRoom(host);
++    const stranger = await pool.player('Stranger');
++    await err(stranger, { t: 'room.invite', playerId: host.id }, ERR.NOT_IN_ROOM, 'no room of its own');
++    await err(host, { t: 'room.invite', playerId: host.id }, ERR.BAD_TARGET, 'yourself');
++    await err(host, { t: 'room.invite', playerId: 'p_nosuchplayer' }, ERR.BAD_TARGET, 'unknown id');
++    const gone = await pool.player('Gone');
++    await gone.terminate();
++    // wait until the server has seen the drop — the roster drops a session the moment its socket
++    // closes, so until then a still-listed session would make this invite succeed instead
++    for (let i = 0; i < 200; i++) {
++      const b = await fetchPlayers(srv.url);
++      if (!b.players.some((p) => p.id === gone.id)) break;
++      await new Promise((r) => setTimeout(r, 25));
++    }
++    await err(host, { t: 'room.invite', playerId: gone.id }, ERR.BAD_TARGET, 'offline');
++    // a spectator seat only watches (server/lobby.js invite)
++    const spectator = await pool.player('Watcher');
++    await ok(spectator, { t: 'room.spectate', code: st.code });
++    await host.waitFor('room.state', (s) => s.spectators.some((x) => x.playerId === spectator.id));
++    await err(spectator, { t: 'room.invite', playerId: host.id }, ERR.SPECTATOR);
++    // inviting somebody into a running match would answer room.join ROOM_STARTED — the invite itself
++    // is allowed (the target's own screen decides); the heavy bucket below caps how often it can be asked
++  });
++
++  test('the per-connection heavy bucket caps invite spam: burst 6, then RATE', async () => {
++    const host = await pool.player('Host');
++    await createRoom(host);
++    const guest = await pool.player('Guest');
++    let rate = null;
++    for (let i = 0; i < 8 && !rate; i++) {
++      const r = await host.request({ t: 'room.invite', playerId: guest.id });
++      if (r.t === 'error') { assert.equal(r.code, ERR.RATE, JSON.stringify(r)); rate = i + 1; }
++      else assert.equal(r.t, 'ok', JSON.stringify(r));
++    }
++    assert.ok(rate != null && rate <= 8, 'the 7th (or sooner) invite draws RATE');
++    assert.match((await guest.waitFor('room.invited')).code, /^[A-Z0-9]+$/, 'the invites that got through arrived');
++  });
++});
++
++describe('GET /api/players (routes)', () => {
++  let srv;
++  let pool;
++  const cap = quietLog();
++  before(async () => {
++    srv = await startServer({ port: 0, host: '127.0.0.1', log: cap.log, MatchClass: StubMatch, lobbyGraceMs: 60_000 });
++    pool = clientPool(() => `ws://127.0.0.1:${srv.port}/ws`);
++  });
++  afterEach(async () => { await pool.closeAll(); });
++  after(async () => {
++    await srv?.close();
++    assert.deepEqual(cap.errors, [], 'no server errors logged');
++  });
++
++  const getPlayers = async () => {
++    const res = await fetch(`${srv.url}/api/players`, { cache: 'no-store' });
++    assert.equal(res.status, 200);
++    assert.match(res.headers.get('cache-control') || '', /no-store/, 'never cached');
++    return res.json();
++  };
++
++  test('lists connected sessions: id, name, inRoom, inMatch — never a room code or token', async () => {
++    const host = await pool.player('Host');
++    const st = await createRoom(host);
++    const guest = await pool.player('Guest');
++
++    let body = await getPlayers();
++    assert.equal(body.ok, true);
++    const byId = new Map(body.players.map((p) => [p.id, p]));
++    // the shape: name + where they are, nothing secret
++    for (const p of body.players) {
++      assert.deepEqual(Object.keys(p).sort(), ['id', 'inMatch', 'inRoom', 'name'], 'exactly these keys');
++      assert.equal(typeof p.name, 'string');
++      assert.equal(typeof p.inRoom, 'boolean');
++      assert.equal(typeof p.inMatch, 'boolean');
++      assert.equal(p.token, undefined);
++      assert.equal(p.code, undefined);
++      assert.equal(p.roomCode, undefined);
++    }
++    assert.equal(byId.get(host.id).name, 'Host');
++    assert.equal(byId.get(host.id).inRoom, true, 'the host sits in its room');
++    assert.equal(byId.get(host.id).inMatch, false, 'no match yet');
++    assert.equal(byId.get(guest.id).inRoom, false, 'the guest is still in the lobby');
++
++    // joining flips the flag for the invited side
++    await ok(guest, { t: 'room.join', code: st.code });
++    await guest.waitFor('room.state', (s) => !!seatOf(s, guest.id));
++    body = await getPlayers();
++    assert.equal(body.players.find((p) => p.id === guest.id).inRoom, true);
++
++    // a dropped session leaves the roster (it stays in the registry as a reconnect window)
++    await guest.terminate();
++    const dropped = await host.waitFor('room.state', (s) => seatOf(s, guest.id)?.connected === false);
++    body = await getPlayers();
++    assert.equal(body.players.some((p) => p.id === guest.id), false, 'only connected sessions list');
++
++    // a running match shows up as inMatch (this is what greys out the invite button in the HUD).
++    // the dropped guest's seat goes first — a not-ready human seat would block room.start
++    await ok(host, { t: 'room.kick', seat: seatOf(dropped, guest.id).seat, playerId: guest.id });
++    await ok(host, { t: 'room.start' });
++    await host.waitFor('room.state', (s) => s.inMatch === true);
++    body = await getPlayers();
++    const row = body.players.find((p) => p.id === host.id);
++    assert.equal(row.inRoom, true);
++    assert.equal(row.inMatch, true);
 +  });
 +});
 diff --git a/test/match/reality-hud-damage.test.js b/test/match/reality-hud-damage.test.js

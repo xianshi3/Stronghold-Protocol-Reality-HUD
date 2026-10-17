@@ -2,21 +2,21 @@
 
 Reality HUD 的核心功能（延迟、服务状态、本局、性能、日志、**伤害页**、**免密钥邀请链接**）**不需要任何服务端改动**，在原版 Stronghold Protocol 上即装即用。
 
-两个补丁都是可选增强，互相独立、可只打一个（改动文件不重叠，应用顺序无关）：
+两个补丁都是可选增强（0.2.6 上互相独立、可只打一个；0.3.x 上 damage 补丁已含 invite 的共用文件改动，只打 damage 即可）：
 
 | 补丁 | 给什么 | 规模 |
 |---|---|---|
-| `reality-hud-invite.patch` | 在线名单 + 一键邀请 | 4 个代码文件 + 1 个文档 |
-| `reality-hud-damage.patch` | 队友伤害实时同步（`m.public` 玩家行 `hudDmg` + 客户端战斗的 `m.hudDmg` 实时上报）+ 命中归属来源 id | 10 个代码文件 + 3 篇文档 + 4 个测试 |
+| `reality-hud-invite.patch` | 在线名单 + 一键邀请（0.2.6 基线） | 4 个代码文件 + 1 个文档 |
+| `reality-hud-damage.patch` | 队友伤害实时同步（`m.public` 玩家行 `hudDmg` + 客户端战斗的 `m.hudDmg` 实时上报）+ 命中归属来源 id（0.3.1 基线，含 invite 共用文件） | 17 个代码/测试/文档文件 + 4 篇文档与测试 |
 
 ## 应用
 
-两个补丁都基于上游 [Stronghold Protocol](https://github.com/sganggs/Stronghold-Protocol) **v0.2.6** 生成：
+补丁基于上游 [Stronghold Protocol](https://github.com/sganggs/Stronghold-Protocol) 生成：**0.3.x 用 v1.8.1 的 `reality-hud-damage.patch`**（21 个文件，已包含 0.2.6 时独立 invite 补丁的共用文件改动）；**0.2.6 用 v1.8.0 的两个补丁**（damage + invite 相互独立）。
 
 ```bash
-cd Stronghold-Protocol            # 游戏仓库，v0.2.6
-git apply reality-hud-invite.patch
-git apply reality-hud-damage.patch
+cd Stronghold-Protocol            # 游戏仓库
+git checkout <上游 0.3.x / 0.2.6 对应提交>
+git apply reality-hud-damage.patch     # 0.3.x（invite 已含）；0.2.6 再打 reality-hud-invite.patch
 # 验证后重启服务器使新代码生效：
 systemctl restart stronghold      # 会断开所有连接、结束内存中的对局，请挑空闲时段
 curl -s http://127.0.0.1:3000/api/players   # 应返回 {"ok":true,"players":[...]}

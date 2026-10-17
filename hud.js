@@ -51,7 +51,7 @@ const AUTHOR = Object.freeze({
   repoLabel: 'xianshi3/Stronghold-Protocol-Reality-HUD',
 });
 
-const MOD_VERSION = '1.8.0';
+const MOD_VERSION = '1.8.1';
 
 const DEFAULTS = {
   x: null,               // null = park it on the right edge (computed on first show)

@@ -3,8 +3,8 @@
 > 分页式可拖拽悬浮窗 mod，叠加在 [《卫戍协议：盟约》](https://github.com/sganggs/Stronghold-Protocol)（Stronghold Protocol，**原项目 / Upstream**）游戏页面之上：首页一屏总览连接状态、真实延迟曲线与在线人数，卡片点按进入**本局**、**免密钥邀请好友**、**伤害统计**（干员 / 玩家 / 敌方三表，可各自弹成独立窗口）、服务、性能、日志与设置各页。
 
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-4ed8af.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.8.0-4ed8af.svg)](CHANGELOG.md)
-[![Game version](https://img.shields.io/badge/game-0.1.3%E2%80%930.2.6-8a948f.svg)](#兼容性)
+[![Version](https://img.shields.io/badge/version-1.8.1-4ed8af.svg)](CHANGELOG.md)
+[![Game version](https://img.shields.io/badge/game-0.1.3%E2%80%930.3.1-8a948f.svg)](#兼容性)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-4ed8af.svg)](#贡献者--contributors)
 
 **纯客户端视角**：不修改任何游戏代码，无构建步骤，无运行时依赖，随页面加载即用；游戏更新后照常工作（服务端补丁为可选增强，见下）。
